@@ -409,19 +409,62 @@ const SPECS = {
     fields: {
       slug:              STR(120),
       activate:          BOOL,
+      // 'preview' (default) | 'autonomous' (migration 167). Autonomous means
+      // the extension's changes apply immediately with no human Apply step —
+      // the card summary MUST say so plainly (see summary below).
+      run_mode:          OPTSTR(12),
       // Display-only card context, re-resolved server-side at apply.
       name:              OPTSTR(200),
       trigger_event:     OPTSTR(80),
       extension_summary: OPTSTR(2000),
     },
     required: ['slug'],
+    check: (f) => (
+      f.run_mode !== undefined && f.run_mode !== null && !['preview', 'autonomous'].includes(f.run_mode)
+        ? ["run_mode must be 'preview' or 'autonomous'"]
+        : []
+    ),
     summary: (a) => {
       const f = a.fields;
       const label = f.name || f.slug;
       const trig = f.trigger_event ? ` (trigger: ${f.trigger_event})` : '';
+      const auto = f.run_mode === 'autonomous'
+        ? ' — and let it APPLY ITS CHANGES AUTOMATICALLY (tasks created, fields updated) without an Apply step. You can switch it back to confirm-first any time.'
+        : '';
       return f.activate === false
-        ? `Install extension "${label}"${trig} as a draft — it stays off until you activate it`
-        : `Install and turn ON extension "${label}"${trig} from the curated library`;
+        ? `Install extension "${label}"${trig} as a draft — it stays off until you activate it${auto}`
+        : `Install and turn ON extension "${label}"${trig} from the curated library${auto}`;
+    },
+  },
+  // Flip an existing extension between confirm-first 'preview' and
+  // 'autonomous' (migration 167) — the chat mirror of
+  // PATCH /api/plugins/:id/run-mode. SERVICE action: apply runs the same
+  // org-scoped UPDATE + plugin.run_mode_changed audit as the route.
+  // Owner/admin at propose AND apply (autonomous grants the plugin standing
+  // write authority).
+  'extension.set_mode': {
+    service: 'extension',
+    flag: 'plugins_enabled',
+    requiresAdmin: true,
+    requiresOrg: true,
+    fields: {
+      plugin_id: NUM,
+      run_mode:  STR(12),
+      // Display-only card context, re-resolved server-side at apply.
+      name:      OPTSTR(200),
+    },
+    required: ['plugin_id', 'run_mode'],
+    check: (f) => (
+      !['preview', 'autonomous'].includes(f.run_mode)
+        ? ["run_mode must be 'preview' or 'autonomous'"]
+        : []
+    ),
+    summary: (a) => {
+      const f = a.fields;
+      const label = f.name ? `"${f.name}"` : `#${f.plugin_id}`;
+      return f.run_mode === 'autonomous'
+        ? `Let extension ${label} run autonomously — it will APPLY ITS CHANGES IMMEDIATELY (tasks created, fields updated) without an Apply step. You can switch back any time.`
+        : `Switch extension ${label} back to confirm-first — its changes will wait for an owner/admin to Apply them.`;
     },
   },
   // ==========================================================================

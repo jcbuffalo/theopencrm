@@ -101,8 +101,9 @@ function defaultPoolQueryImpl(sql, params) {
     return Promise.resolve({ rows: [{ id: createdRunIdCounter }], rowCount: 1 });
   }
   // finalizeRun — migration 081 dropped memory_peak_bytes; migration 113 added
-  // proposed_actions (bound at $9, pushing runId to $10). If a future migration
-  // adds a new column be sure to bump the indices below to match.
+  // proposed_actions (bound at $9); migration 167 added run_mode (bound at
+  // $10, pushing runId to $11). If a future migration adds a new column be
+  // sure to bump the indices below to match.
   if (/UPDATE plugin_runs/i.test(text) && /SET ended_at/i.test(text)) {
     const update = {
       status: params[0],
@@ -114,7 +115,8 @@ function defaultPoolQueryImpl(sql, params) {
       db_queries: params[6],
       egress_bytes: params[7],
       proposed_actions: params[8] ? JSON.parse(params[8]) : null,
-      runId: params[9],
+      run_mode: params[9],
+      runId: params[10],
     };
     lastFinalizeUpdate = update;
     allFinalizeUpdates.push(update);
@@ -182,6 +184,7 @@ function setPlugin(sourceCode, opts = {}) {
     status: opts.status || 'active',
     source_code: sourceCode,
     spec_json: opts.spec_json || null,
+    run_mode: opts.run_mode || 'preview',
   };
 }
 

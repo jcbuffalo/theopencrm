@@ -1033,10 +1033,144 @@ const BILLING_PLANS = [
   },
 ];
 
+// ---------------------------------------------------------------------------
+// AI Gateway card (spec 202) — mint / list / revoke ocrm_gw_* keys that let a
+// SELF-HOSTED Open CRM instance route its AI calls through the hosted metered
+// proxy, billed to this workspace. Rendered only when AI pay-as-you-go is
+// active/comped (minting 402s otherwise) and the viewer can manage billing.
+// The plaintext key is shown exactly once after minting (copy-once pattern,
+// mirroring Settings → Developer API keys).
+// ---------------------------------------------------------------------------
+
+function GatewayKeyCopyBox({ value }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard blocked — the value is still selectable */ }
+  };
+  return (
+    <Alert tone="warning" title="Your new gateway key" className="my-3">
+      <div className="flex items-center gap-2 mt-1">
+        <code className="flex-1 text-xs font-mono text-gray-900 break-all bg-white border border-warning-200 rounded px-2 py-1">
+          {value}
+        </code>
+        <Button size="sm" variant="secondary" icon={copied ? 'check' : 'copy'} onClick={copy}>
+          {copied ? 'Copied!' : 'Copy'}
+        </Button>
+      </div>
+      <div className="text-[11px] mt-1">
+        This key will not be shown again. On your self-hosted server set{' '}
+        <code className="font-mono">OPENCRM_AI_GATEWAY_KEY</code> to this value (no other AI config needed).
+      </div>
+    </Alert>
+  );
+}
+
+function GatewayKeysCard() {
+  const [keys, setKeys] = useState(null);
+  const [label, setLabel] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [freshKey, setFreshKey] = useState(null);
+  const [error, setError] = useState('');
+
+  const load = async () => {
+    try {
+      const r = await api.get('/billing/ai/gateway-keys');
+      setKeys(r.data.keys || []);
+    } catch (e) {
+      setKeys([]);
+      setError(e.response?.data?.error || 'Failed to load gateway keys');
+    }
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const create = async (e) => {
+    e.preventDefault();
+    if (!label.trim()) return;
+    setCreating(true); setError(''); setFreshKey(null);
+    try {
+      const r = await api.post('/billing/ai/gateway-keys', { label: label.trim() });
+      setFreshKey(r.data.key);
+      setLabel('');
+      await load();
+    } catch (e2) {
+      setError(e2.response?.data?.error || 'Failed to create gateway key');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const revoke = async (id) => {
+    if (!window.confirm('Revoke this gateway key? The self-hosted instance using it will lose AI access within seconds.')) return;
+    setError('');
+    try {
+      await api.delete(`/billing/ai/gateway-keys/${id}`);
+      await load();
+    } catch (e) {
+      setError(e.response?.data?.error || 'Failed to revoke gateway key');
+    }
+  };
+
+  return (
+    <Card
+      title="AI Gateway"
+      subtitle="Point a self-hosted Open CRM at our metered AI — usage bills to this workspace."
+    >
+      <form onSubmit={create} className="flex items-end gap-2 mb-3">
+        <Input
+          label="Key label"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="e.g. office self-host"
+          wrapperClassName="flex-1"
+        />
+        <Button type="submit" icon="plus" disabled={!label.trim()} loading={creating} loadingLabel="Minting…">
+          Mint key
+        </Button>
+      </form>
+
+      {freshKey && <GatewayKeyCopyBox value={freshKey} />}
+      {error && <Alert tone="danger" className="mb-3" onDismiss={() => setError('')}>{error}</Alert>}
+
+      {keys === null ? (
+        <Skeleton lines={2} />
+      ) : keys.length === 0 ? (
+        <p className="text-xs text-gray-500">
+          No gateway keys yet. Mint one and set it as <code className="font-mono">OPENCRM_AI_GATEWAY_KEY</code> on
+          your self-hosted server — its AI calls will be metered here at the same pay-as-you-go rate,
+          under the same monthly cap.
+        </p>
+      ) : (
+        <ul className="divide-y divide-gray-100 text-sm">
+          {keys.map(k => (
+            <li key={k.id} className="py-2 flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-gray-900 truncate">{k.label}</div>
+                <div className="text-xs text-gray-500 font-mono">{k.key_prefix}…</div>
+              </div>
+              <div className="text-xs text-gray-500 text-right">
+                <div>{k.status === 'revoked' ? 'Revoked' : (k.last_used_at ? `Last used ${new Date(k.last_used_at).toLocaleDateString()}` : 'Never used')}</div>
+                <div>{Number(k.requests_count || 0).toLocaleString()} requests</div>
+              </div>
+              {k.status !== 'revoked' && (
+                <Button size="sm" variant="secondary" onClick={() => revoke(k.id)}>Revoke</Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
 function BillingTab() {
   const auth = useAuth();
   const canManage = isWorkspaceAdmin(auth);
   const [status, setStatus] = useState(null); // { configured, tier, hasStripeCustomer }
+  const [aiStatus, setAiStatus] = useState(null); // { status: 'active'|'comped'|... } from /billing/ai/status
   const [busy, setBusy] = useState('');       // tier being checked out, or 'portal'
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -1046,6 +1180,9 @@ function BillingTab() {
     api.get('/billing/status')
       .then(r => { if (!cancelled) setStatus(r.data); })
       .catch(() => { if (!cancelled) setStatus({ configured: false, tier: 'free' }); });
+    api.get('/billing/ai/status')
+      .then(r => { if (!cancelled) setAiStatus(r.data); })
+      .catch(() => { if (!cancelled) setAiStatus(null); });
     return () => { cancelled = true; };
   }, []);
 
@@ -1155,6 +1292,10 @@ function BillingTab() {
           );
         })}
       </div>
+
+      {canManage && (aiStatus?.status === 'active' || aiStatus?.status === 'comped') && (
+        <GatewayKeysCard />
+      )}
 
       {canManage ? (
         <Card

@@ -67,9 +67,16 @@ const DEFAULT_PRICING = { input: 3.00, output: 15.00 }; // safe-side default = S
 
 // ai_usage_events.billing_mode values (migration 154). 'platform' rows are
 // charged at cost × UPCHARGE_MULTIPLIER; 'byo_key' rows come from an org's
-// own Anthropic key and carry charged_usd_micro = 0.
+// own Anthropic key and carry charged_usd_micro = 0. 'gateway' rows (spec
+// 202) only exist on a SELF-HOSTED instance whose calls went out through the
+// hosted AI gateway: tokens + raw cost are recorded locally for visibility,
+// but charged_usd_micro = 0 here because the HOSTED platform's own ledger
+// (endpoint='gateway', billing_mode='platform') is what actually bills the
+// gateway org — charging locally too would double-count.
 const BILLING_MODE_PLATFORM = 'platform';
 const BILLING_MODE_BYO = 'byo_key';
+const BILLING_MODE_GATEWAY = 'gateway';
+const ZERO_CHARGE_MODES = new Set([BILLING_MODE_BYO, BILLING_MODE_GATEWAY]);
 
 // Cache pricing is derived: read ≈ 10% of input, write ≈ 125% of input.
 // Encoded as multipliers so a tier-specific change is a one-liner.
@@ -185,10 +192,10 @@ async function recordUsage({ orgId, userId = null, endpoint, model, usage, billi
   if (!orgId) return; // unattributed calls (e.g. system jobs without org) skip the ledger
   if (!usage || typeof usage !== 'object') return;
   try {
-    const mode = billingMode === BILLING_MODE_BYO ? BILLING_MODE_BYO : BILLING_MODE_PLATFORM;
+    const mode = ZERO_CHARGE_MODES.has(billingMode) ? billingMode : BILLING_MODE_PLATFORM;
     const computed = computeCost(model, usage);
     const cost_usd_micro = computed.cost_usd_micro;
-    const charged_usd_micro = mode === BILLING_MODE_BYO ? 0 : computed.charged_usd_micro;
+    const charged_usd_micro = ZERO_CHARGE_MODES.has(mode) ? 0 : computed.charged_usd_micro;
     const inputTokens         = Number(usage.input_tokens  || 0);
     const outputTokens        = Number(usage.output_tokens || 0);
     const cacheCreationTokens = Number(usage.cache_creation_input_tokens || 0);
@@ -439,6 +446,7 @@ module.exports = {
   CACHE_WRITE_MULTIPLIER,
   BILLING_MODE_PLATFORM,
   BILLING_MODE_BYO,
+  BILLING_MODE_GATEWAY,
   computeCost,
   recordUsage,
   summarizeUsage,

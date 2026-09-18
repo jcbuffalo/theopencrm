@@ -83,7 +83,7 @@ export default function Terms() {
           our payment processor, and non-refundable once the underlying AI processing has been performed. You can
           monitor AI usage on your Usage page. If your organization supplies its own AI provider API key, that usage
           is billed directly by the provider under the provider's terms and our metered AI fees do not apply to it.
-          If AI charges become past due we may suspend AI features (not your access to your data).
+          If AI charges become past due we may suspend AI features (not your access to your data). AI usage routed through the Open CRM AI Gateway from a self-hosted instance is billed to the workspace that minted the gateway key, at the AI pay-as-you-go rates.
         </p>
 
         <h2 className="text-xl font-bold text-gray-900 mt-8">5. AS-IS — No Warranty</h2>

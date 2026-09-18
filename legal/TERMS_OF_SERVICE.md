@@ -72,6 +72,9 @@ Some AI features are billed by usage rather than by subscription:
   provider's terms, and our metered AI fees do not apply to that usage.
 - Free-tier AI allowances may be changed prospectively; we will not
   retroactively charge for usage that was free when incurred.
+- AI usage routed through the Open CRM AI Gateway from a self-hosted
+  instance is billed to the workspace that minted the gateway key, at the
+  AI pay-as-you-go rates.
 
 ## 6. Confidentiality
 

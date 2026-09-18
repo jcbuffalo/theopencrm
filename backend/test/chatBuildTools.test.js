@@ -741,7 +741,7 @@ describe('tool schema + system prompt', () => {
       expect(tool, n).toBeDefined();
       expect(tool.input_schema.additionalProperties).toBe(false);
     }
-    expect(names.length).toBe(51); // 49 + list_extensions + propose_install_extension (extension library wave)
+    expect(names.length).toBe(52); // 49 + list_extensions + propose_install_extension + propose_set_extension_mode (autonomous run mode wave)
     expect(names[names.length - 1]).toBe('list_modules'); // prompt-cache anchor stays last
   });
 

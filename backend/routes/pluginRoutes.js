@@ -16,6 +16,9 @@
 //   DELETE /api/plugins/:id          — hard delete
 //   POST   /api/plugins/:id/test-run — manual invocation (returns runner result)
 //   POST   /api/plugins/:id/run      — production invocation (rate-limited)
+//   POST   /api/plugins/:id/apply    — confirm-first writer for run proposals
+//   PATCH  /api/plugins/:id/run-mode — owner/admin: 'preview' ⇄ 'autonomous'
+//                                      (migration 167; audited)
 //   GET    /api/plugins/:id/runs     — recent invocation log
 //
 // The conversational endpoint validates the model output against
@@ -101,7 +104,7 @@ router.get('/', async (req, res) => {
     if (!req.orgId) return res.status(400).json({ success: false, error: 'Org context required' });
     const r = await pool.query(
       `SELECT id, name, description, source_kind, status, trigger_event, public_id,
-              created_at, updated_at, entity_version
+              run_mode, last_triggered_at, created_at, updated_at, entity_version
          FROM plugins WHERE org_id = $1 ORDER BY created_at DESC`,
       [req.orgId]
     );
@@ -348,128 +351,110 @@ router.post('/:id/apply', pluginRunLimiter, validateBody(pluginSchemas.applySche
       return res.status(400).json({ success: false, error: 'Invalid plugin id' });
     }
 
-    // Load the run, joined to its plugin, and hard-scope BOTH to the caller's
-    // org. A run from another org (or another plugin) is a 404 — never applied.
-    const runRes = await pool.query(
-      `SELECT r.id, r.plugin_id, r.org_id, r.status, r.proposed_actions, r.applied_at
-         FROM plugin_runs r
-         JOIN plugins p ON p.id = r.plugin_id
-        WHERE r.id = $1 AND r.plugin_id = $2 AND r.org_id = $3 AND p.org_id = $3`,
-      [runId, pluginId, req.orgId]
-    );
-    if (runRes.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Run not found for this plugin in your org' });
-    }
-    const run = runRes.rows[0];
-
-    // Idempotency: a run's proposals apply at most once.
-    if (run.applied_at) {
-      return res.status(409).json({ success: false, error: 'This run has already been applied', code: 'ALREADY_APPLIED' });
-    }
-
-    const proposals = Array.isArray(run.proposed_actions) ? run.proposed_actions : [];
-    if (proposals.length === 0) {
-      return res.status(400).json({ success: false, error: 'This run proposed no changes to apply', code: 'NO_PROPOSALS' });
-    }
-
-    // Re-validate every proposal from scratch against the plugin write
-    // allowlist. The stored row is untrusted — a tampered field is stripped or
-    // the whole proposal rejected here.
-    const validated = [];
-    for (let i = 0; i < proposals.length; i++) {
-      const v = pluginActions.validateProposal(proposals[i]);
-      if (!v.ok) {
-        return res.status(400).json({
-          success: false,
-          error: `Proposal #${i + 1} failed re-validation`,
-          code: 'PROPOSAL_REJECTED',
-          validation_errors: v.errors,
-        });
-      }
-      validated.push(v.action);
-    }
-
-    // Ownership pre-flight for referenced ids (task contact_id / deal_id) BEFORE
-    // opening the transaction, so a cross-org ref can never be written.
-    const scope = { orgId: req.orgId, userId: req.userId };
-    for (const action of validated) {
-      for (const ref of pluginActions.referencedIds(action)) {
-        const r = await pool.query(`SELECT 1 FROM ${ref.table} WHERE id = $1 AND org_id = $2`, [ref.id, req.orgId]);
-        if (r.rows.length === 0) {
-          return res.status(404).json({
-            success: false,
-            error: `${ref.field} #${ref.id} was not found in your org`,
-            code: 'REF_NOT_IN_ORG',
-          });
-        }
-      }
-    }
-
-    const client = await pool.connect();
-    const applied = [];
+    // Shared commit machinery (services/pluginActions.applyRunProposals) —
+    // the SAME path pluginRunner's autonomous auto-apply uses, so the human
+    // Apply button and run_mode='autonomous' can never diverge: identical
+    // server-side proposal load, re-validation, ref ownership checks, and the
+    // single org-scoped transaction with the FOR UPDATE applied_at guard.
+    let outcome;
     try {
-      await client.query('BEGIN');
-      // Re-assert the not-yet-applied invariant inside the transaction and lock
-      // the row so two concurrent Apply clicks can't double-write.
-      const lock = await client.query(
-        `SELECT applied_at FROM plugin_runs WHERE id = $1 AND org_id = $2 FOR UPDATE`,
-        [runId, req.orgId]
-      );
-      if (lock.rows.length === 0) {
-        await client.query('ROLLBACK').catch(() => {});
-        return res.status(404).json({ success: false, error: 'Run not found for this plugin in your org' });
-      }
-      if (lock.rows[0].applied_at) {
-        await client.query('ROLLBACK').catch(() => {});
-        return res.status(409).json({ success: false, error: 'This run has already been applied', code: 'ALREADY_APPLIED' });
-      }
-
-      for (const action of validated) {
-        const row = await pluginActions.applyProposal(client, action, scope);
-        applied.push({
-          entity: action.entity,
-          op: action.op,
-          target_id: action.op === 'update' ? action.target_id : (row ? row.id : null),
-          ok: !!row,
-          // A null row means the org-scoped WHERE matched nothing (e.g. the
-          // record was deleted between preview and apply). We record it as
-          // not-applied rather than failing the whole batch.
-          skipped: !row,
-        });
-      }
-
-      const result = { applied, applied_count: applied.filter((a) => a.ok).length, total: applied.length };
-      await client.query(
-        `UPDATE plugin_runs SET applied_at = NOW(), applied_by = $1, applied_result = $2::jsonb
-          WHERE id = $3 AND org_id = $4`,
-        [req.userId, JSON.stringify(result), runId, req.orgId]
-      );
-      await client.query('COMMIT');
-
-      // Audit every applied plugin write. One event per applied row so the
-      // append-only audit_log has the same granularity as chat's action_applied.
-      for (const a of applied) {
-        if (!a.ok) continue;
-        audit.fromReq(req, {
-          event: audit.EVENTS.PLUGIN_ACTION_APPLIED,
-          targetType: a.entity,
-          targetId: a.target_id,
-          success: true,
-          meta: { runId, plugin_id: pluginId, op: a.op },
-        });
-      }
-
-      return res.json({ success: true, result });
+      outcome = await pluginActions.applyRunProposals({
+        runId, pluginId, orgId: req.orgId, appliedBy: req.userId,
+      });
     } catch (err) {
-      await client.query('ROLLBACK').catch(() => {});
       if (req.log) req.log.error('plugin_apply_txn_failed', { error: err.message, runId });
       return res.status(500).json({ success: false, error: 'Failed to apply proposals', detail: err.message });
-    } finally {
-      client.release();
     }
+    if (!outcome.ok) {
+      return res.status(outcome.http).json({
+        success: false,
+        error: outcome.error,
+        ...(outcome.code ? { code: outcome.code } : {}),
+        ...(outcome.validation_errors ? { validation_errors: outcome.validation_errors } : {}),
+      });
+    }
+
+    // Audit every applied plugin write. One event per applied row so the
+    // append-only audit_log has the same granularity as chat's action_applied.
+    for (const a of outcome.result.applied) {
+      if (!a.ok) continue;
+      audit.fromReq(req, {
+        event: audit.EVENTS.PLUGIN_ACTION_APPLIED,
+        targetType: a.entity,
+        targetId: a.target_id,
+        success: true,
+        meta: { runId, plugin_id: pluginId, op: a.op },
+      });
+    }
+
+    return res.json({ success: true, result: outcome.result });
   } catch (err) {
     if (req.log) req.log.error('plugin_apply_failed', { error: err.message });
     res.status(500).json({ success: false, error: 'Apply failed', detail: err.message });
+  }
+});
+
+/**
+ * PATCH /api/plugins/:id/run-mode — flip a plugin between confirm-first
+ * 'preview' (default) and 'autonomous' (migration 167).
+ *
+ * AUTONOMOUS is the owner-authorized reversal of the "a plugin can never
+ * write directly" invariant: a successful run's proposals are auto-applied
+ * server-side through the same commit machinery as the Apply button. Because
+ * that grants the plugin standing write authority, changing run_mode is
+ * gated to org owner/admin — the same bar as applying plugin writes and
+ * enabling extensions — and every change is audited
+ * (plugin.run_mode_changed, meta { old, new }).
+ *
+ * Body: { run_mode: 'preview' | 'autonomous' }.
+ */
+router.patch('/:id/run-mode', async (req, res) => {
+  try {
+    if (!req.orgId) return res.status(400).json({ success: false, error: 'Org context required' });
+    if (!['owner', 'admin'].includes(req.orgRole)) {
+      return res.status(403).json({ success: false, error: 'Only an organization owner or admin can change how an extension applies its changes', code: 'FORBIDDEN' });
+    }
+    const pluginId = Number(req.params.id);
+    if (!Number.isInteger(pluginId) || pluginId <= 0) {
+      return res.status(400).json({ success: false, error: 'Invalid plugin id' });
+    }
+    const next = req.body && req.body.run_mode;
+    if (!['preview', 'autonomous'].includes(next)) {
+      return res.status(400).json({ success: false, error: "run_mode must be 'preview' or 'autonomous'", code: 'INVALID_RUN_MODE' });
+    }
+
+    const cur = await pool.query(
+      `SELECT id, name, run_mode FROM plugins WHERE id = $1 AND org_id = $2`,
+      [pluginId, req.orgId]
+    );
+    if (cur.rows.length === 0) return res.status(404).json({ success: false, error: 'Plugin not found' });
+    const old = cur.rows[0].run_mode || 'preview';
+    if (old === next) {
+      return res.json({ success: true, data: cur.rows[0], unchanged: true });
+    }
+
+    const r = await pool.query(
+      `UPDATE plugins
+          SET run_mode = $1, updated_at = CURRENT_TIMESTAMP, updated_by = $2,
+              entity_version = entity_version + 1
+        WHERE id = $3 AND org_id = $4
+        RETURNING id, name, status, run_mode, trigger_event, updated_at`,
+      [next, req.userId, pluginId, req.orgId]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ success: false, error: 'Plugin not found' });
+
+    audit.fromReq(req, {
+      event: audit.EVENTS.PLUGIN_RUN_MODE_CHANGED,
+      targetType: 'plugin',
+      targetId: pluginId,
+      success: true,
+      meta: { old, new: next, via: 'route' },
+    });
+
+    res.json({ success: true, data: r.rows[0] });
+  } catch (err) {
+    if (req.log) req.log.error('plugin_run_mode_change_failed', { error: err.message });
+    res.status(500).json({ success: false, error: 'Failed to change run mode' });
   }
 });
 
@@ -695,7 +680,8 @@ router.get('/:id/runs', async (req, res) => {
       `SELECT id, plugin_id, org_id, started_at, ended_at, status, trigger_kind,
               trigger_source, triggered_by, trigger_data, input_payload, output_payload,
               log_lines, result_summary, error_message, cpu_ms,
-              db_queries, egress_bytes, proposed_actions, applied_at, applied_result
+              db_queries, egress_bytes, proposed_actions, applied_at, applied_result,
+              run_mode
          FROM plugin_runs
         WHERE ${conds.join(' AND ')}
         ORDER BY started_at DESC
@@ -746,12 +732,13 @@ router.get('/:id/runs', async (req, res) => {
 // propose_install_extension apply branch calls, so "Enable from the library
 // page" and "Enable from chat" can never diverge. This wrapper owns the
 // req-bound audit trail.
-async function cloneTemplateForOrg({ slug, req, activate = false }) {
+async function cloneTemplateForOrg({ slug, req, activate = false, runMode = undefined }) {
   const result = await extensionInstall.installLibraryTemplate({
     orgId: req.orgId,
     userId: req.userId,
     slug,
     activate,
+    runMode,
     log: req.log,
   });
   if (result.body && result.body.success && result.body.plugin) {
@@ -766,12 +753,40 @@ async function cloneTemplateForOrg({ slug, req, activate = false }) {
         plugin_id: row.id,
         name: row.name,
         activated: !!result.body.activated,
+        ...(runMode ? { run_mode: runMode } : {}),
         ...(result.body.activated_existing ? { activated_existing: true } : {}),
         ...(result.body.already_active ? { already_active: true } : {}),
       },
     });
+    // Setting run_mode='autonomous' at install time is a run-mode change like
+    // any other — give it the same dedicated audit row the PATCH emits.
+    if (runMode === 'autonomous') {
+      audit.fromReq(req, {
+        event: audit.EVENTS.PLUGIN_RUN_MODE_CHANGED,
+        targetType: 'plugin',
+        targetId: row.id,
+        success: true,
+        meta: { old: 'preview', new: 'autonomous', via: 'install' },
+      });
+    }
   }
   return result;
+}
+
+// Requested run mode on an Enable call ({ run_mode: 'autonomous' }). Setting
+// autonomous requires the same owner/admin bar as PATCH /:id/run-mode —
+// requestedRunMode() returns { error } for a non-admin asking for autonomous,
+// and undefined (leave default) when nothing was requested.
+function requestedRunMode(req) {
+  const raw = req.body && req.body.run_mode;
+  if (raw === undefined || raw === null || raw === '' ) return { runMode: undefined };
+  if (!['preview', 'autonomous'].includes(raw)) {
+    return { error: { http: 400, body: { success: false, error: "run_mode must be 'preview' or 'autonomous'", code: 'INVALID_RUN_MODE' } } };
+  }
+  if (raw === 'autonomous' && !['owner', 'admin'].includes(req.orgRole)) {
+    return { error: { http: 403, body: { success: false, error: 'Only an organization owner or admin can enable autonomous mode', code: 'FORBIDDEN' } } };
+  }
+  return { runMode: raw };
 }
 
 // `activate` (body { activate: true } or ?activate=1): atomic install+activate
@@ -791,7 +806,9 @@ router.post('/from-template', async (req, res) => {
     if (!slug) {
       return res.status(400).json({ success: false, error: 'template_id is required' });
     }
-    const result = await cloneTemplateForOrg({ slug, req, activate: wantsActivate(req) });
+    const rm = requestedRunMode(req);
+    if (rm.error) return res.status(rm.error.http).json(rm.error.body);
+    const result = await cloneTemplateForOrg({ slug, req, activate: wantsActivate(req), runMode: rm.runMode });
     return res.status(result.http).json(result.body);
   } catch (err) {
     if (req.log) req.log.error('plugin_from_template_failed', { error: err.message });
@@ -804,7 +821,9 @@ router.post('/from-template', async (req, res) => {
 // frontend roll out the new UX incrementally without breaking existing pages.
 router.post('/library/:slug/install', async (req, res) => {
   try {
-    const result = await cloneTemplateForOrg({ slug: req.params.slug, req, activate: wantsActivate(req) });
+    const rm = requestedRunMode(req);
+    if (rm.error) return res.status(rm.error.http).json(rm.error.body);
+    const result = await cloneTemplateForOrg({ slug: req.params.slug, req, activate: wantsActivate(req), runMode: rm.runMode });
     return res.status(result.http).json(result.body);
   } catch (err) {
     if (req.log) req.log.error('plugin_library_install_failed', { error: err.message });

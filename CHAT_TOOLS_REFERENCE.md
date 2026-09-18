@@ -7,7 +7,7 @@ the route handler implements each via `buildChatToolRunner(req)` in
 `input_schema`; the org scope is always injected server-side via `qs(req)` —
 never trusted from the model.
 
-51 tools live in seven groups:
+52 tools live in seven groups:
 
 - **CRM-action tools (8)** — surface deals, tasks, attention, at-risk accounts,
   drafts. Always available to every authenticated user in any mode.
@@ -25,11 +25,12 @@ never trusted from the model.
 - **Super-admin diagnostic tools (3)** — cross-tenant triage. Same schema for
   everyone, but each handler returns `{ error: 'not_authorized', code:
   'NOT_AUTHORIZED' }` unless `req.adminRole === 'super_admin'`.
-- **Write-action tools (16, confirm-first / Spec 200 + control plane)** — the
+- **Write-action tools (17, confirm-first / Spec 200 + control plane)** — the
   `propose_*` family, covering every module: deals, tasks, activities,
   contacts, companies, leads, cases, meetings, account lifecycle stage, record
   owners, sequence enrollment, playbook runs, feature flags, extension
-  installs (`propose_install_extension`) — plus the
+  installs + run-mode changes (`propose_install_extension` w/ `autonomous?`,
+  `propose_set_extension_mode`) — plus the
   **cohort harness** (`propose_cohort_action`) for bulk actions over a
   segment's current members, and the **chat plugin builder**
   (`propose_build_plugin`): describe a tool in plain English and get a
@@ -818,3 +819,17 @@ Returns `{ extensions: [{slug, name, category, summary, tags, trigger_event, req
 Triggered extensions run in the confirm-first preview posture: any writes an
 event- or schedule-triggered run proposes land as proposals on the run row for
 Apply — an extension never writes unattended.
+
+
+### `propose_set_extension_mode`
+
+| Field | Value |
+|---|---|
+| Signature | `(slug_or_plugin: string, mode: 'preview'\|'autonomous')` |
+| Scope | per-org; owner/admin at propose AND apply |
+| Writes | NONE — proposal card; apply mirrors `PATCH /api/plugins/:id/run-mode` (audited `plugin.run_mode_changed`) |
+| Example prompt | "Let the stalled-deal digest apply its tasks automatically." |
+
+`propose_install_extension` also accepts `autonomous?: boolean` — the proposal
+card states plainly that the extension will apply its changes without an
+Apply step.

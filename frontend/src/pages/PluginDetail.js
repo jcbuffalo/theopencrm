@@ -12,6 +12,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import api from '../api';
+import { useAuth } from '../AuthContext';
 import Nav from '../components/Nav';
 import { Alert, Button, Card, Container, Modal, PageHeader, Skeleton, StatusBadge, Tabs, Textarea } from '../components/ui';
 
@@ -89,7 +90,8 @@ const MONO = 'font-mono text-xs';
  * committed. If there are proposals, the user reviews the diff and clicks
  * "Apply" (POST /:id/apply) to commit them.
  */
-function RunModal({ pluginId, onClose, onComplete }) {
+function RunModal({ pluginId, runMode, onClose, onComplete }) {
+  const isAutonomous = runMode === 'autonomous';
   const [inputText, setInputText] = useState('{}');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
@@ -99,7 +101,10 @@ function RunModal({ pluginId, onClose, onComplete }) {
   const [applyErr, setApplyErr] = useState('');
 
   const proposals = Array.isArray(result?.proposed_actions) ? result.proposed_actions : [];
-  const applied = !!applyResult;
+  // Autonomous plugins (run_mode='autonomous') auto-apply a successful run's
+  // proposals server-side — the result reports it via auto_apply.
+  const autoApplied = !!result?.auto_apply?.applied;
+  const applied = !!applyResult || autoApplied;
 
   const doRun = async () => {
     setErr('');
@@ -156,7 +161,7 @@ function RunModal({ pluginId, onClose, onComplete }) {
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy || applying}>Close</Button>
           <Button onClick={doRun} disabled={applying} loading={busy} loadingLabel="Running…">
-            {result ? 'Preview again' : 'Preview run'}
+            {isAutonomous ? (result ? 'Run again' : 'Run now') : (result ? 'Preview again' : 'Preview run')}
           </Button>
         </>
       }
@@ -173,7 +178,11 @@ function RunModal({ pluginId, onClose, onComplete }) {
           hint={
             <>
               The plugin's code reads this via <code>input</code> (e.g. <code>input.dealId</code>).
-              Runs are a <strong>preview</strong>: any change the plugin makes is staged for your approval, not written yet.
+              {isAutonomous ? (
+                <> This plugin runs in <strong>autonomous mode</strong>: changes it makes are applied immediately, without an Apply step.</>
+              ) : (
+                <> Runs are a <strong>preview</strong>: any change the plugin makes is staged for your approval, not written yet.</>
+              )}
             </>
           }
         />
@@ -212,7 +221,9 @@ function RunModal({ pluginId, onClose, onComplete }) {
             <div className="rounded border border-info-200 bg-info-50 p-3">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <div className="text-sm font-semibold text-info-900">
-                  {proposals.length} proposed change{proposals.length === 1 ? '' : 's'} — not written yet
+                  {autoApplied
+                    ? `${proposals.length} change${proposals.length === 1 ? '' : 's'} — applied automatically (autonomous mode)`
+                    : `${proposals.length} proposed change${proposals.length === 1 ? '' : 's'} — not written yet`}
                 </div>
                 {!applied && (
                   <Button size="sm" onClick={doApply} loading={applying} loadingLabel="Applying…">
@@ -224,10 +235,21 @@ function RunModal({ pluginId, onClose, onComplete }) {
                 {proposals.map((a, i) => <ProposedChange key={i} action={a} />)}
               </div>
               {applyErr && <Alert tone="danger" className="mt-2">{applyErr}</Alert>}
-              {applied && (
+              {applyResult && (
                 <Alert tone="success" className="mt-2">
                   Applied {applyResult.applied_count} of {applyResult.total} change{applyResult.total === 1 ? '' : 's'}.
                   {applyResult.applied_count < applyResult.total && ' Some records could not be written (they may have changed since the preview).'}
+                </Alert>
+              )}
+              {autoApplied && result.auto_apply.result && (
+                <Alert tone="success" className="mt-2">
+                  Applied automatically: {result.auto_apply.result.applied_count} of {result.auto_apply.result.total} change{result.auto_apply.result.total === 1 ? '' : 's'} written.
+                  This extension is in autonomous mode — no Apply step needed.
+                </Alert>
+              )}
+              {result?.auto_apply && result.auto_apply.applied === false && (
+                <Alert tone="warning" className="mt-2">
+                  Autonomous apply didn't complete ({result.auto_apply.error || 'unknown error'}). The changes are still pending — you can Apply them from the Runs tab.
                 </Alert>
               )}
             </div>
@@ -241,6 +263,9 @@ function RunModal({ pluginId, onClose, onComplete }) {
 export default function PluginDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { orgRole } = useAuth();
+  const isOrgAdmin = ['owner', 'admin'].includes(orgRole);
+  const [modeBusy, setModeBusy] = useState(false);
   const [plugin, setPlugin] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -322,6 +347,21 @@ export default function PluginDetail() {
     }
   };
 
+  // Flip between confirm-first 'preview' and 'autonomous' (owner/admin only;
+  // PATCH /plugins/:id/run-mode, audited server-side).
+  const setRunMode = async (next) => {
+    setModeBusy(true);
+    setError('');
+    try {
+      await api.patch(`/plugins/${id}/run-mode`, { run_mode: next });
+      await load();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Run-mode change failed');
+    } finally {
+      setModeBusy(false);
+    }
+  };
+
   const remove = async () => {
     if (!window.confirm('Delete this plugin? This cannot be undone.')) return;
     try {
@@ -375,6 +415,7 @@ export default function PluginDetail() {
   if (plugin.status === 'draft') statusActions.push({ label: 'Activate', icon: 'check-circle', onClick: () => setStatus('active') });
   if (plugin.status === 'active') statusActions.push({ label: 'Suspend', icon: 'lock', onClick: () => setStatus('suspended') });
   if (plugin.status === 'suspended') statusActions.push({ label: 'Re-activate', icon: 'check-circle', onClick: () => setStatus('active') });
+  if (plugin.status === 'errored') statusActions.push({ label: 'Resume', icon: 'check-circle', onClick: () => setStatus('active') });
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -401,6 +442,25 @@ export default function PluginDetail() {
 
         <div className="space-y-6">
           {error && <Alert tone="danger" onDismiss={() => setError('')}>{error}</Alert>}
+
+          {/* Auto-pause surface: the trigger engine flips a plugin to
+              'errored' after 5 consecutive failed triggered runs. Explain it
+              and offer the one-click Resume (status back to active). */}
+          {plugin.status === 'errored' && (
+            <Alert
+              tone="warning"
+              icon="alert"
+              title="This extension was paused automatically"
+            >
+              <p className="text-sm">
+                It failed several triggered runs in a row, so it stopped running to avoid piling up errors.
+                Check the recent runs below, fix the cause, then resume it.
+              </p>
+              <div className="mt-2">
+                <Button size="sm" onClick={() => setStatus('active')}>Resume extension</Button>
+              </div>
+            </Alert>
+          )}
 
           {runResult && (
             <Alert
@@ -442,6 +502,38 @@ export default function PluginDetail() {
                 )}
                 <Field label="Spec JSON" value={
                   <pre className="text-xs bg-gray-50 border border-gray-200 rounded p-3 overflow-x-auto whitespace-pre-wrap break-words">{JSON.stringify(plugin.spec_json || {}, null, 2)}</pre>
+                } />
+                <Field label="Run mode" value={
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <StatusBadge
+                        tone={plugin.run_mode === 'autonomous' ? 'warning' : 'info'}
+                        label={plugin.run_mode === 'autonomous' ? 'Autonomous' : 'Confirm-first (preview)'}
+                      />
+                      {isOrgAdmin && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          loading={modeBusy}
+                          loadingLabel="Switching…"
+                          onClick={() => setRunMode(plugin.run_mode === 'autonomous' ? 'preview' : 'autonomous')}
+                        >
+                          {plugin.run_mode === 'autonomous' ? 'Switch to confirm-first' : 'Run autonomously'}
+                        </Button>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500 max-w-xl">
+                      {plugin.run_mode === 'autonomous'
+                        ? 'Autonomous: this extension applies its changes immediately (tasks created, fields updated) without an Apply step. All sandbox caps and the auto-pause safety net stay in force. You can switch back any time.'
+                        : 'Confirm-first: changes this extension proposes wait on the run row until an owner/admin clicks Apply. Autonomous extensions apply their changes immediately without an Apply step.'}
+                      {!isOrgAdmin && ' Only an org owner/admin can change this.'}
+                    </p>
+                  </div>
+                } />
+                <Field label="Last triggered" value={
+                  plugin.last_triggered_at
+                    ? <span className="text-sm text-gray-700">{new Date(plugin.last_triggered_at).toLocaleString()}</span>
+                    : <span className="text-sm text-gray-400">never (no automatic runs yet)</span>
                 } />
                 <Field label="Created" value={<span className="text-sm text-gray-700">{new Date(plugin.created_at).toLocaleString()} · v{plugin.entity_version || 1}</span>} />
                 <Field label="Public ID" value={<code className="text-xs bg-gray-50 px-1.5 py-0.5 rounded">{plugin.public_id}</code>} />
@@ -525,6 +617,7 @@ export default function PluginDetail() {
       {showRunModal && (
         <RunModal
           pluginId={id}
+          runMode={plugin.run_mode || 'preview'}
           onClose={() => setShowRunModal(false)}
           onComplete={() => {
             // After a successful run, refresh the runs list if the user
@@ -589,7 +682,7 @@ function RunRow({ run, pluginId, onApplied }) {
             </Button>
           )}
           {proposals.length > 0 && run.applied_at && (
-            <StatusBadge tone="success" label="Applied" />
+            <StatusBadge tone="success" label={run.run_mode === 'autonomous' ? 'Applied automatically' : 'Applied'} />
           )}
           <div className="text-[11px] text-gray-500">
             {(run.cpu_ms > 0 || elapsed) && <span>{run.cpu_ms || elapsed}ms · </span>}

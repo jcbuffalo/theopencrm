@@ -155,7 +155,19 @@ async function getMonthlyAiCallCountForUser(userId) {
   }
 }
 
+// Gateway mode (spec 202): a self-hosted instance whose AI goes through the
+// hosted metered proxy. The gateway enforces billing-side caps (billing
+// verdict + hard cap on the platform), so the LOCAL free-tier quota must not
+// double-gate — exactly like a BYO key. Gateway mode is only in effect when
+// no platform ANTHROPIC_API_KEY exists (resolveApiKey order: byo → platform
+// → gateway). Read per call so tests / rotation don't need a restart.
+function isGatewayMode() {
+  return !!process.env.OPENCRM_AI_GATEWAY_KEY && !process.env.ANTHROPIC_API_KEY;
+}
+
 async function checkAiQuota({ orgId, userId = null, userCount = 1 }) {
+  // Gateway-key instances are exempt like BYO — the gateway bills and caps.
+  if (isGatewayMode()) return;
   if (!orgId) {
     // No org → no billing, no tier: apply the free-tier per-user allotment
     // keyed on the user. Callers without either id stay unmetered (nothing
@@ -245,4 +257,5 @@ module.exports = {
   getSeatCount,
   checkAiQuota,
   getMonthlyAiCallCount,
+  isGatewayMode,
 };

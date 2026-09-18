@@ -79,7 +79,7 @@ function PrettyJson({ value, label }) {
 
 const TH = 'px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 bg-gray-50 border-b border-gray-200 whitespace-nowrap';
 
-function RunRow({ run, expanded, onToggle }) {
+function RunRow({ run, pluginId, expanded, onToggle, onApplied }) {
   const when = run.started_at ? new Date(run.started_at) : null;
   // Friendly relative-ish timestamp. Native Intl is fine for the precision we
   // need (the rows are sorted desc anyway).
@@ -87,6 +87,28 @@ function RunRow({ run, expanded, onToggle }) {
     ? when.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
     : '—';
   const trigger = triggerLabel(run.trigger_kind, run.trigger_source);
+  // Confirm-first proposals captured on this run. Triggered (event/schedule)
+  // runs land here with NO other UI — this row is where an owner/admin
+  // reviews and applies them. Autonomous runs arrive already applied.
+  const proposals = Array.isArray(run.proposed_actions) ? run.proposed_actions : [];
+  const pendingApply = proposals.length > 0 && !run.applied_at;
+  const [applying, setApplying] = useState(false);
+  const [applyErr, setApplyErr] = useState('');
+
+  const doApply = async (e) => {
+    e.stopPropagation();
+    setApplyErr('');
+    setApplying(true);
+    try {
+      await api.post(`/plugins/${pluginId}/apply`, { runId: run.id });
+      if (onApplied) await onApplied();
+    } catch (err) {
+      setApplyErr(err.response?.data?.error || err.message || 'Apply failed');
+    } finally {
+      setApplying(false);
+    }
+  };
+
   return (
     <>
       <tr
@@ -96,7 +118,15 @@ function RunRow({ run, expanded, onToggle }) {
         aria-expanded={expanded}
       >
         <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">{whenText}</td>
-        <td className="px-4 py-3"><RunStatusBadge status={run.status} friendly={run.friendly_status} /></td>
+        <td className="px-4 py-3">
+          <span className="inline-flex items-center gap-1.5 flex-wrap">
+            <RunStatusBadge status={run.status} friendly={run.friendly_status} />
+            {pendingApply && <StatusBadge tone="warning" label={`${proposals.length} change${proposals.length === 1 ? '' : 's'} to apply`} />}
+            {proposals.length > 0 && run.applied_at && (
+              <StatusBadge tone="success" label={run.run_mode === 'autonomous' ? 'Applied automatically' : 'Applied'} />
+            )}
+          </span>
+        </td>
         <td className="px-4 py-3 text-sm text-gray-700">{trigger}</td>
         <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">{formatDuration(run.cpu_ms)}</td>
         <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap text-right">{run.db_queries ?? 0}</td>
@@ -106,6 +136,32 @@ function RunRow({ run, expanded, onToggle }) {
         <tr className="bg-gray-50 border-b border-gray-200">
           <td colSpan={6} className="px-4 py-3">
             <div className="text-xs text-gray-600 space-y-2">
+              {proposals.length > 0 && (
+                <div className={`rounded border p-2 ${pendingApply ? 'bg-warning-50 border-warning-200' : 'bg-success-50 border-success-200'}`} onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="text-sm font-semibold text-gray-800">
+                      {pendingApply
+                        ? `This run wants to make ${proposals.length} change${proposals.length === 1 ? '' : 's'} — nothing is written until you apply them.`
+                        : run.run_mode === 'autonomous'
+                          ? `This run applied ${proposals.length} change${proposals.length === 1 ? '' : 's'} automatically (autonomous mode).`
+                          : `${proposals.length} change${proposals.length === 1 ? '' : 's'} — applied.`}
+                    </div>
+                    {pendingApply && (
+                      <Button size="sm" onClick={doApply} loading={applying} loadingLabel="Applying…">
+                        Apply {proposals.length} change{proposals.length === 1 ? '' : 's'}
+                      </Button>
+                    )}
+                  </div>
+                  <ul className="mt-1.5 space-y-0.5">
+                    {proposals.map((a, i) => (
+                      <li key={i} className="text-[11px] font-mono text-gray-700">
+                        {a.summary || `${a.op} ${a.entity}`}
+                      </li>
+                    ))}
+                  </ul>
+                  {applyErr && <div className="mt-1.5 text-[11px] text-danger-600">{applyErr}</div>}
+                </div>
+              )}
               {run.result_summary && (
                 <div>
                   <div className="text-[11px] uppercase tracking-wider text-gray-500 font-semibold mb-1">Result summary</div>
@@ -160,6 +216,9 @@ export default function PluginRuns() {
   const [statusKey, setStatusKey] = useState('all');
   const [sinceKey, setSinceKey] = useState('24h');
   const [expanded, setExpanded] = useState(() => new Set());
+  // Bumped after an Apply so the table refetches and the row's pending badge
+  // flips to "Applied" without a manual refresh.
+  const [reloadTick, setReloadTick] = useState(0);
 
   // Auto-expand the #run-<id> fragment so a "View run" chip from chat lands
   // the user directly on the relevant row. We parse on every mount + every
@@ -206,7 +265,7 @@ export default function PluginRuns() {
       }
     })();
     return () => { cancelled = true; };
-  }, [id, statusKey, sinceKey]);
+  }, [id, statusKey, sinceKey, reloadTick]);
 
   const toggleExpanded = (runId) => {
     setExpanded(prev => {
@@ -339,8 +398,10 @@ export default function PluginRuns() {
                       <RunRow
                         key={r.id}
                         run={r}
+                        pluginId={id}
                         expanded={expanded.has(r.id)}
                         onToggle={() => toggleExpanded(r.id)}
+                        onApplied={() => setReloadTick(t => t + 1)}
                       />
                     ))}
                   </tbody>

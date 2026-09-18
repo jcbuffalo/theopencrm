@@ -19,6 +19,10 @@
 //     otherwise the template is cloned and inserted status='active' atomically
 //     (one INSERT — there is no draft-then-PATCH window).
 //
+//   installLibraryTemplate({ ..., runMode: 'autonomous' }) → additionally set
+//     plugins.run_mode at install/activate time (migration 167). Callers must
+//     gate 'autonomous' to org owner/admin — same bar as PATCH /:id/run-mode.
+//
 // Callers own the audit trail (they hold the req); this module never audits.
 
 const pool = require('../db');
@@ -34,7 +38,7 @@ const { validateSpec } = require('./pluginSpecValidator');
 async function getLibraryStatusForOrg(orgId) {
   if (!orgId) return {};
   const r = await pool.query(
-    `SELECT id, library_slug, status
+    `SELECT id, library_slug, status, run_mode
        FROM plugins
       WHERE org_id = $1 AND library_slug IS NOT NULL
       ORDER BY (status = 'active') ASC, created_at ASC`,
@@ -48,6 +52,7 @@ async function getLibraryStatusForOrg(orgId) {
     bySlug[row.library_slug] = {
       plugin_id: row.id,
       status: row.status,
+      run_mode: row.run_mode || 'preview',
       active: row.status === 'active' || (prev ? prev.active : false),
     };
   }
@@ -64,6 +69,7 @@ function enrichLibraryList(items, statusBySlug) {
       active: !!(st && st.active),
       installed_plugin_id: st ? st.plugin_id : null,
       installed_status: st ? st.status : null,
+      installed_run_mode: st ? (st.run_mode || 'preview') : null,
     };
   });
 }
@@ -96,10 +102,20 @@ function projectTemplateSpec(tpl) {
  * body carries { success: true, plugin, template_slug, activated,
  * already_active?, activated_existing? }.
  */
-async function installLibraryTemplate({ orgId, userId, slug, activate = false, log } = {}) {
+async function installLibraryTemplate({ orgId, userId, slug, activate = false, runMode = undefined, log } = {}) {
   if (!orgId) {
     return { http: 400, body: { success: false, error: 'Org context required', code: 'ORG_REQUIRED' } };
   }
+  // run_mode at install time (migration 167). undefined/null = leave the
+  // default ('preview' on a fresh clone, unchanged on an existing one).
+  // CALLERS OWN THE AUTHORIZATION: setting 'autonomous' grants the plugin
+  // standing write authority, so every caller (the from-template routes, the
+  // chat apply branch) gates it to org owner/admin before passing it here —
+  // same bar as PATCH /api/plugins/:id/run-mode.
+  if (runMode !== undefined && runMode !== null && !['preview', 'autonomous'].includes(runMode)) {
+    return { http: 400, body: { success: false, error: "run_mode must be 'preview' or 'autonomous'", code: 'INVALID_RUN_MODE' } };
+  }
+  const requestedMode = runMode || null;
   const tpl = pluginLibrary.getBySlug(slug);
   if (!tpl) {
     return { http: 404, body: { success: false, error: 'Template not found', code: 'TEMPLATE_NOT_FOUND' } };
@@ -126,7 +142,7 @@ async function installLibraryTemplate({ orgId, userId, slug, activate = false, l
   // activate that clone instead of stamping a duplicate row.
   if (activate) {
     const existing = await pool.query(
-      `SELECT id, name, public_id, status, source_kind, description, trigger_event, library_slug
+      `SELECT id, name, public_id, status, source_kind, description, trigger_event, library_slug, run_mode
          FROM plugins
         WHERE org_id = $1 AND library_slug = $2
         ORDER BY (status = 'active') DESC, created_at DESC
@@ -136,15 +152,32 @@ async function installLibraryTemplate({ orgId, userId, slug, activate = false, l
     if (existing.rows.length > 0) {
       const row = existing.rows[0];
       if (row.status === 'active') {
+        // Already on. If the caller requested a different run_mode, honor it
+        // (an admin re-Enabling with "run autonomously" checked expects the
+        // mode to change) — otherwise nothing to do.
+        if (requestedMode && (row.run_mode || 'preview') !== requestedMode) {
+          const modeUpd = await pool.query(
+            `UPDATE plugins
+                SET run_mode = $1, updated_at = CURRENT_TIMESTAMP, updated_by = $2,
+                    entity_version = entity_version + 1
+              WHERE id = $3 AND org_id = $4
+              RETURNING id, name, public_id, status, source_kind, description, trigger_event, library_slug, run_mode`,
+            [requestedMode, userId, row.id, orgId]
+          );
+          if (modeUpd.rows.length > 0) {
+            return { http: 200, body: { success: true, plugin: modeUpd.rows[0], template_slug: slug, activated: true, already_active: true, run_mode_changed: true } };
+          }
+        }
         return { http: 200, body: { success: true, plugin: row, template_slug: slug, activated: true, already_active: true } };
       }
       const updated = await pool.query(
         `UPDATE plugins
-            SET status = 'active', updated_at = CURRENT_TIMESTAMP, updated_by = $1,
+            SET status = 'active', run_mode = COALESCE($4, run_mode),
+                updated_at = CURRENT_TIMESTAMP, updated_by = $1,
                 entity_version = entity_version + 1
           WHERE id = $2 AND org_id = $3
-          RETURNING id, name, public_id, status, source_kind, description, trigger_event, library_slug`,
-        [userId, row.id, orgId]
+          RETURNING id, name, public_id, status, source_kind, description, trigger_event, library_slug, run_mode`,
+        [userId, row.id, orgId, requestedMode]
       );
       if (updated.rows.length > 0) {
         return { http: 200, body: { success: true, plugin: updated.rows[0], template_slug: slug, activated: true, activated_existing: true } };
@@ -181,10 +214,10 @@ async function installLibraryTemplate({ orgId, userId, slug, activate = false, l
     inserted = await pool.query(
       `INSERT INTO plugins (org_id, name, description, spec_json, source_code, source_kind,
                             trigger_event, trigger_filter_json, status, created_by, updated_by,
-                            library_slug)
+                            library_slug, run_mode)
        VALUES ($1, $2, $3, COALESCE($4, '{}')::jsonb, $5, 'library',
-               $6, $7::jsonb, $8, $9, $9, $10)
-       RETURNING id, name, public_id, status, source_kind, description, trigger_event, library_slug`,
+               $6, $7::jsonb, $8, $9, $9, $10, $11)
+       RETURNING id, name, public_id, status, source_kind, description, trigger_event, library_slug, run_mode`,
       [
         orgId,
         candidateName,
@@ -196,6 +229,7 @@ async function installLibraryTemplate({ orgId, userId, slug, activate = false, l
         status,
         userId,
         slug,
+        requestedMode || 'preview',
       ]
     );
   } catch (err) {

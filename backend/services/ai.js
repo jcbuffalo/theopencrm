@@ -23,11 +23,40 @@ const quotaEnforcer = require('./quotaEnforcer');
 const aiModel = require('./aiModel');
 const orgAiKeys = require('./orgAiKeys');
 
-// Deployment-wide platform key, captured at module load (tests set the env
-// var before the first require). Per-org bring-your-own keys (migration
-// 153) are resolved per call by resolveApiKey() and take precedence.
-const API_KEY = process.env.ANTHROPIC_API_KEY;
+// Deployment-wide platform key. Read per call (was a module-load capture)
+// so ops key rotation — and env-staged tests — don't need a fresh require;
+// existing suites that set the var before the first require are unaffected.
+// Per-org bring-your-own keys (migration 153) are resolved per call by
+// resolveApiKey() and take precedence.
+function platformApiKey() {
+  return process.env.ANTHROPIC_API_KEY;
+}
 const ENDPOINT = 'https://api.anthropic.com/v1/messages';
+
+// ---------------------------------------------------------------------------
+// AI Gateway (spec 202) — self-host fallback.
+// A self-hosted instance with no org BYO key and no platform ANTHROPIC_API_KEY
+// can set OPENCRM_AI_GATEWAY_KEY (an ocrm_gw_* key minted on the hosted
+// platform's /settings#billing page). Calls then go to the hosted metered
+// proxy instead of Anthropic directly; the hosted org pays for the usage.
+//
+// URL JOIN: the gateway base URL is joined with '/v1/messages' — exactly the
+// join the Anthropic Node SDK performs on a custom baseURL (client.messages
+// .create → POST `${baseURL}/v1/messages`) — so the default base
+// https://app.theopencrm.com/api/gateway resolves to the proxy mount
+// /api/gateway/v1/messages verbatim. gatewayMessagesUrl() is exported and
+// unit-tested to keep that join honest. Env is read per call (not captured
+// at load) so key rotation doesn't need a restart.
+const DEFAULT_GATEWAY_URL = 'https://app.theopencrm.com/api/gateway';
+function gatewayBaseUrl() {
+  return (process.env.OPENCRM_AI_GATEWAY_URL || DEFAULT_GATEWAY_URL).replace(/\/+$/, '');
+}
+function gatewayMessagesUrl() {
+  return `${gatewayBaseUrl()}/v1/messages`;
+}
+function gatewayKeyConfigured() {
+  return !!process.env.OPENCRM_AI_GATEWAY_KEY;
+}
 
 // Per-call resolver — replaces the module-level MODEL constant. The actual
 // model + effort is now per-org configurable (services/aiModel.js) with a
@@ -41,16 +70,29 @@ async function resolveAiSettings(orgId) {
  * Resolve which key a call should go out under, and how it is billed.
  *   { key, billingMode: 'byo_key' }  — the org stored its own Anthropic key
  *   { key, billingMode: 'platform' } — the deployment ANTHROPIC_API_KEY
- *   null                             — neither exists (AI not configured)
+ *   { key, billingMode: 'gateway', endpoint } — OPENCRM_AI_GATEWAY_KEY (spec
+ *       202): the self-host fallback; calls go to the hosted metered proxy
+ *       at `endpoint` and the hosted org pays for the usage.
+ *   null                             — none exist (AI not configured)
  * The org key wins when both exist: the customer opted to pay Anthropic
  * directly, so we must not burn (and upcharge) the platform key instead.
+ * The gateway key is last: an instance with its own ANTHROPIC_API_KEY has
+ * no reason to pay the gateway's 2× upcharge.
  */
 async function resolveApiKey(orgId = null) {
   if (orgId) {
     const orgKey = await orgAiKeys.getOrgKey(orgId);
     if (orgKey) return { key: orgKey, billingMode: 'byo_key' };
   }
-  if (API_KEY) return { key: API_KEY, billingMode: 'platform' };
+  const platformKey = platformApiKey();
+  if (platformKey) return { key: platformKey, billingMode: 'platform' };
+  if (gatewayKeyConfigured()) {
+    return {
+      key: process.env.OPENCRM_AI_GATEWAY_KEY,
+      billingMode: 'gateway',
+      endpoint: gatewayMessagesUrl(),
+    };
+  }
   return null;
 }
 
@@ -62,7 +104,7 @@ async function resolveApiKey(orgId = null) {
  * semantics.
  */
 function isConfigured(orgId = null) {
-  return !!API_KEY || orgAiKeys.hasKeyCached(orgId);
+  return !!platformApiKey() || gatewayKeyConfigured() || orgAiKeys.hasKeyCached(orgId);
 }
 
 /** Async form: platform key OR a stored (decryptable) BYO key for the org. */
@@ -132,13 +174,23 @@ async function callClaude({ system, messages, maxTokens = 1024, orgId = null, us
     if (thinkingBudget !== null) {
       body.thinking = { type: 'enabled', budget_tokens: thinkingBudget };
     }
-    const res = await fetch(ENDPOINT, {
+    // Gateway mode (spec 202): same Messages API dialect, different URL +
+    // the ocrm_gw_ key as a Bearer credential (the proxy also accepts it in
+    // x-api-key, which we send regardless — that keeps the header shape
+    // identical to a direct Anthropic call). NOTE: named apiUrl, NOT
+    // `endpoint` — `endpoint` is this function's metering label parameter.
+    const apiUrl = creds.endpoint || ENDPOINT;
+    const headers = {
+      'x-api-key': creds.key,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    };
+    if (creds.billingMode === 'gateway') {
+      headers['authorization'] = `Bearer ${creds.key}`;
+    }
+    const res = await fetch(apiUrl, {
       method: 'POST',
-      headers: {
-        'x-api-key': creds.key,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
+      headers,
       body: JSON.stringify(body),
     });
     if (!res.ok) {
@@ -1055,14 +1107,28 @@ const CHAT_TOOLS = [
   },
   {
     name: 'propose_install_extension',
-    description: 'Propose installing an extension from the CURATED LIBRARY — e.g. "turn on the stalled-deal digest", "enable the quote follow-up extension". CONFIRM-FIRST: returns a proposal card summarising what the extension does and when it runs (its trigger); NOTHING installs until an org owner/admin clicks Apply, which installs AND activates it in one atomic step (the same internals as the library page\'s Enable button — idempotent: an existing clone is turned on, never duplicated). Find the slug with list_extensions first — never invent one. Requires plugins_enabled; owner/admin only. Use propose_build_plugin only for a CUSTOM tool the library does not already cover.',
+    description: 'Propose installing an extension from the CURATED LIBRARY — e.g. "turn on the stalled-deal digest", "enable the quote follow-up extension". CONFIRM-FIRST: returns a proposal card summarising what the extension does and when it runs (its trigger); NOTHING installs until an org owner/admin clicks Apply, which installs AND activates it in one atomic step (the same internals as the library page\'s Enable button — idempotent: an existing clone is turned on, never duplicated). Find the slug with list_extensions first — never invent one. Requires plugins_enabled; owner/admin only. Use propose_build_plugin only for a CUSTOM tool the library does not already cover. Pass autonomous:true ONLY when the user explicitly asks for the extension to apply its changes automatically (no Apply step) — the proposal card states this plainly; default is confirm-first preview.',
     input_schema: {
       type: 'object',
       properties: {
-        slug:     { type: 'string', description: 'The library entry\'s slug, exactly as list_extensions returned it.' },
-        activate: { type: 'boolean', description: 'Default true (install and turn on). Pass false only if the user explicitly wants it installed but left off (a draft).' },
+        slug:       { type: 'string', description: 'The library entry\'s slug, exactly as list_extensions returned it.' },
+        activate:   { type: 'boolean', description: 'Default true (install and turn on). Pass false only if the user explicitly wants it installed but left off (a draft).' },
+        autonomous: { type: 'boolean', description: 'Default false. true = the extension runs AUTONOMOUSLY: its changes (tasks created, fields updated) apply immediately without a human Apply step. Only pass true when the user explicitly asked for that; they can switch back any time.' },
       },
       required: ['slug'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'propose_set_extension_mode',
+    description: 'Propose changing how an EXISTING extension/plugin applies its changes — confirm-first \'preview\' (default: changes wait for an owner/admin to Apply) vs \'autonomous\' (changes apply immediately, no Apply step). CONFIRM-FIRST: returns a proposal card that states the consequence plainly; nothing changes until an org owner/admin clicks Apply. Find the plugin id with list_plugins/describe_plugin or list_extensions (installed_plugin_id). Requires plugins_enabled; owner/admin only. All sandbox safety caps (query/task budgets, wall clock, auto-pause) stay enforced in both modes.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        plugin_id: { type: 'number', description: 'The plugin\'s id in this org.' },
+        run_mode:  { type: 'string', enum: ['preview', 'autonomous'], description: '\'autonomous\' = apply changes immediately without an Apply step; \'preview\' = back to confirm-first.' },
+      },
+      required: ['plugin_id', 'run_mode'],
       additionalProperties: false,
     },
   },
@@ -1685,6 +1751,9 @@ module.exports = {
   isConfigured,
   isConfiguredForOrg,
   resolveApiKey,
+  gatewayMessagesUrl,
+  gatewayKeyConfigured,
+  DEFAULT_GATEWAY_URL,
   summarizeDeal,
   draftFollowUp,
   conversationalSearch,

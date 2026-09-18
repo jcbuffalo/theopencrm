@@ -114,6 +114,12 @@ const EVENTS = {
   // is the plugin analogue of AI_ACTION_APPLIED — the plugin sandbox never
   // writes directly; this event marks the human-approved write.
   PLUGIN_ACTION_APPLIED: 'plugin.action_applied',
+  // An org owner/admin changed a plugin's run mode (migration 167 —
+  // 'preview' confirm-first vs 'autonomous' auto-apply). Meta carries
+  //   { old, new } plus how it was changed (route | install | chat)
+  // so a forensic reader can reconstruct exactly when a plugin was granted
+  // (or stripped of) the right to apply its own writes.
+  PLUGIN_RUN_MODE_CHANGED: 'plugin.run_mode_changed',
   // Chat-First copilot turn (POST /api/ai/chat). One row per user message
   // submitted. Meta carries session_id, the user's message text, the
   // assistant reply, and the array of tool calls Claude made — full

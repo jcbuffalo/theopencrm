@@ -96,6 +96,13 @@ function ContactForm() {
 export default function Landing() {
   return (
     <div className="min-h-screen bg-white">
+      {/* Launch announcement ribbon */}
+      <div className="bg-gray-900 text-gray-100 text-sm">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 text-center">
+          <span className="font-semibold text-white">Sept 18:</span> The Open CRM is now fully open source on GitHub.{' '}
+          <Link to="/launch" className="underline text-white font-semibold hover:no-underline">Read the launch post →</Link>
+        </div>
+      </div>
       {/* Navigation */}
       <nav className="bg-white border-b border-gray-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">

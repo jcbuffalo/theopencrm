@@ -79,6 +79,7 @@ const Notifications = lazyWithRetry(() => import('./pages/Notifications'));
 const Segments = lazyWithRetry(() => import('./pages/Segments'));
 const PitchZang = lazyWithRetry(() => import('./pages/PitchZang'));
 const PitchGeneric = lazyWithRetry(() => import('./pages/PitchGeneric'));
+const LaunchPost = lazyWithRetry(() => import('./pages/LaunchPost')); // public open-source launch announcement
 const PitchReadiness = lazyWithRetry(() => import('./pages/PitchReadiness'));
 const Appreciation = lazyWithRetry(() => import('./pages/Appreciation'));
 const AdminFeatureFlags = lazyWithRetry(() => import('./pages/AdminFeatureFlags'));
@@ -184,6 +185,7 @@ function App() {
           <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/pending" element={<PendingApproval />} />
           <Route path="/pitch" element={<PitchGeneric />} />
+          <Route path="/launch" element={<LaunchPost />} />
           {/* Generic legal-doc renderer — serves any /legal/:doc against /api/legal/:doc */}
           <Route path="/legal/:doc" element={<LegalDoc />} />
           <Route path="/sso/handoff" element={<SsoHandoff />} />

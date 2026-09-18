@@ -270,6 +270,11 @@ function isCsrfExempt(req) {
   // Customer portal public reads (no session; the 192-bit portal token in the
   // URL is the scoping credential). GET-only today — listed for forward-safety.
   if (p.startsWith('/api/public/portal/')) return true;
+  // AI Gateway proxy (spec 202): authenticated by an ocrm_gw_ bearer key, not
+  // the session cookie — an external self-hosted server can't carry a CSRF
+  // cookie, and the 256-bit gateway key is the credential. Management
+  // endpoints (/api/billing/ai/gateway-keys) stay session-authed + CSRF'd.
+  if (p.startsWith('/api/gateway/')) return true;
   if (p.startsWith('/api/emails/unsubscribe/')) return true;
   if (p.startsWith('/api/emails/track/')) return true;
   return false;
@@ -729,6 +734,18 @@ console.log('✅ Mounted: /api/security (email verification + 2FA + password res
 // session-authed GET /meetings keep their existing behavior.)
 app.use('/api/webhooks', webhookRoutes);
 console.log('✅ Mounted: /api/webhooks (inbound receivers — signature-verified, intentionally not org-gated)');
+
+// AI Gateway proxy (spec 202) — POST /api/gateway/v1/messages. NO session
+// auth and CSRF-exempt (see isCsrfExempt): the caller is an external
+// self-hosted Open CRM server presenting an ocrm_gw_* gateway key, which is
+// hashed and looked up (30s cache) to resolve the paying org. Per-key
+// 60/min rate limit + 1 MB body cap + model allowlist + billing verdict
+// (evaluateAiBilling) all enforced inside gatewayRoutes BEFORE the upstream
+// Anthropic call; usage is metered to the org exactly like hosted AI
+// (ai_usage_events endpoint='gateway'). The path shape matches the Anthropic
+// SDK's baseURL join: baseURL https://.../api/gateway + /v1/messages.
+app.use('/api/gateway', require('./routes/gatewayRoutes'));
+console.log('✅ Mounted: POST /api/gateway/v1/messages (AI gateway proxy for self-hosters — key-authed, metered, CSRF-exempt)');
 
 app.use('/api/service-contracts', serviceContractRoutes);
 console.log('✅ Mounted: /api/service-contracts (Phase V service contracts + renewal alerts)');

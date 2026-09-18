@@ -40,6 +40,10 @@ const PUBLIC_META = {
     title: 'Product tour — The Open CRM',
     desc: 'See The Open CRM in action: multi-pipeline deals, AI copilot, automation, reporting, and customer-success tooling.',
   },
+  '/launch': {
+    title: 'The Open CRM is now actually open — launch announcement',
+    desc: 'The full source is public on GitHub under AGPL-3.0: self-host free, bring your own AI key with no markup, or use hosted from $15/seat. The whole business model, in the open.',
+  },
   '/terms': {
     title: 'Terms of Service — The Open CRM',
     desc: 'Terms of Service for The Open CRM hosted service.',

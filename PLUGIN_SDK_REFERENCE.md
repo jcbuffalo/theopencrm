@@ -404,7 +404,12 @@ never fail the originating write); `trigger_filter_json` is AND-ed
 field-equality against the payload; per-(plugin, entity, transition) dedupe
 prevents double-fires; runs are recorded with `trigger_kind`
 `'event'`/`'schedule'`; **triggered runs execute in the confirm-first preview
-posture** — SDK writes become proposals for Apply, never direct commits;
+posture** — SDK writes become proposals for Apply — UNLESS the plugin's
+`run_mode='autonomous'` (migration 167, owner/admin opt-in per plugin):
+then a SUCCESSFUL run's proposals are auto-applied through the exact same
+validated apply machinery (`services/pluginActions.applyRunProposals`);
+failed/partial runs never commit, every cap still applies, and each write
+is audited with `autonomous: true`;
 after 5 consecutive execution failures the plugin auto-pauses
 (`status='errored'`) and org admins are notified. `last_triggered_at` is
 stamped on every attempt. Authoring-accepted events without a dispatch site

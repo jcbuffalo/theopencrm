@@ -160,7 +160,7 @@ const CAPABILITIES = [
     summary: 'A curated library of ready-made extensions (follow-ups, digests, data hygiene, CX, reporting) you can enable in one click — from the /plugins/library gallery or right here in chat.',
     where: '/plugins/library',
     gating: 'plugins_enabled',
-    how: 'Requires the plugins module (plugins_enabled, off by default — an owner/admin can enable it, and I can propose that). Ask me "what extensions do you have for follow-ups?" (list_extensions shows the catalog with your org\'s installed status) and "turn on the stalled-deal digest" — I will propose it with propose_install_extension; an org owner/admin clicks Apply and it installs AND activates in one step. Or browse the gallery at /plugins/library and click Enable. Extensions marked with a required integration need that integration connected first.',
+    how: 'Requires the plugins module (plugins_enabled, off by default — an owner/admin can enable it, and I can propose that). Ask me "what extensions do you have for follow-ups?" (list_extensions shows the catalog with your org\'s installed status) and "turn on the stalled-deal digest" — I will propose it with propose_install_extension; an org owner/admin clicks Apply and it installs AND activates in one step. Or browse the gallery at /plugins/library and click Enable. Extensions marked with a required integration need that integration connected first. By default extensions are confirm-first (their changes wait for an Apply); an owner/admin can opt one into AUTONOMOUS mode — changes apply immediately, no Apply step — via the "Run autonomously" toggle, PATCH /api/plugins/:id/run-mode, or propose_set_extension_mode in chat, and switch back any time.',
   },
   {
     topic: 'soc2_security',

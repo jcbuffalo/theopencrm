@@ -39,6 +39,7 @@ const logger = require('../services/logger');
 const aiMetering = require('../services/aiMetering');
 const aiThresholdWorker = require('../services/aiThresholdWorker');
 const requireAiBilling = require('../middleware/requireAiBilling');
+const gatewayKeys = require('../services/gatewayKeys');
 const { isSuperAdmin } = require('../middleware/adminAuth');
 
 const router = express.Router();
@@ -784,6 +785,120 @@ router.patch('/ai/threshold', async (req, res) => {
   } catch (err) {
     if (req.log) req.log.error('billing_ai_threshold_patch_failed', { error: err });
     res.status(500).json({ success: false, error: err.message || 'Failed to update threshold' });
+  }
+});
+
+// ============================================================================
+// AI Gateway keys — /api/billing/ai/gateway-keys (spec 202)
+// ============================================================================
+// Management surface for the ocrm_gw_* keys a self-hosted instance presents
+// to POST /api/gateway/v1/messages. Session-authed + CSRF-protected (unlike
+// the proxy itself) and gated by the same canManageOrgBilling check as every
+// other billing mutation. Minting REQUIRES the org's AI pay-as-you-go billing
+// to be on (active/comped) — a gateway key is a spend instrument.
+
+// GET /ai/gateway-keys — list this org's keys (never returns the secret).
+router.get('/ai/gateway-keys', async (req, res) => {
+  if (!req.orgId) return res.status(400).json({ success: false, error: 'Org context required' });
+  if (!(await canManageOrgBilling(req))) {
+    return res.status(403).json({ success: false, error: 'Only a workspace owner or admin can manage gateway keys', code: 'ADMIN_REQUIRED' });
+  }
+  try {
+    const r = await pool.query(
+      `SELECT id, label, key_prefix, status, created_by, last_used_at, requests_count, revoked_at, created_at
+         FROM ai_gateway_keys
+        WHERE org_id = $1
+        ORDER BY created_at DESC`,
+      [req.orgId]
+    );
+    res.json({ success: true, keys: r.rows });
+  } catch (err) {
+    if (req.log) req.log.error('gateway_keys_list_failed', { error: err });
+    res.status(500).json({ success: false, error: 'Failed to list gateway keys' });
+  }
+});
+
+// POST /ai/gateway-keys — mint. Plaintext returned ONCE, never again.
+router.post('/ai/gateway-keys', async (req, res) => {
+  if (!req.orgId) return res.status(400).json({ success: false, error: 'Org context required' });
+  if (!(await canManageOrgBilling(req))) {
+    return res.status(403).json({ success: false, error: 'Only a workspace owner or admin can mint gateway keys', code: 'ADMIN_REQUIRED' });
+  }
+  const label = (req.body?.label || '').toString().trim();
+  if (!label) return res.status(400).json({ success: false, error: 'A label is required (e.g. "office self-host")' });
+  if (label.length > 120) return res.status(400).json({ success: false, error: 'Label must be 120 characters or fewer' });
+  try {
+    // Gateway usage bills to this org through the AI pay-as-you-go meter, so
+    // the meter must exist: active (Stripe sub) or comped (operator grant).
+    const org = await pool.query(
+      `SELECT ai_billing_status FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const status = org.rows[0]?.ai_billing_status || 'unconfigured';
+    if (status !== 'active' && status !== 'comped') {
+      return res.status(402).json({
+        success: false,
+        error: 'Gateway keys require AI pay-as-you-go billing to be active on this workspace. Start the plan first — gateway usage bills here.',
+        code: 'AI_BILLING_REQUIRED_FOR_GATEWAY',
+        action: 'start_billing',
+        status,
+      });
+    }
+
+    const { fullKey, keyPrefix, keyHash } = gatewayKeys.generateKey();
+    const r = await pool.query(
+      `INSERT INTO ai_gateway_keys (org_id, label, key_prefix, key_hash, created_by)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, label, key_prefix, status, created_by, last_used_at, requests_count, created_at`,
+      [req.orgId, label, keyPrefix, keyHash, req.userId || null]
+    );
+    const row = r.rows[0];
+    audit.fromReq(req, {
+      event: 'ai_gateway.key_created',
+      targetType: 'ai_gateway_key',
+      targetId: String(row.id),
+      meta: { key_id: row.id, key_prefix: keyPrefix, label },
+    });
+    res.status(201).json({
+      success: true,
+      key: fullKey,
+      warning: 'Copy this key now — it will not be shown again.',
+      record: row,
+    });
+  } catch (err) {
+    if (req.log) req.log.error('gateway_key_create_failed', { error: err });
+    res.status(500).json({ success: false, error: 'Failed to create gateway key' });
+  }
+});
+
+// DELETE /ai/gateway-keys/:id — revoke (soft). Busts the proxy's key cache
+// so the revoked key 401s immediately on this pod (≤30s elsewhere).
+router.delete('/ai/gateway-keys/:id', async (req, res) => {
+  if (!req.orgId) return res.status(400).json({ success: false, error: 'Org context required' });
+  if (!(await canManageOrgBilling(req))) {
+    return res.status(403).json({ success: false, error: 'Only a workspace owner or admin can revoke gateway keys', code: 'ADMIN_REQUIRED' });
+  }
+  try {
+    const r = await pool.query(
+      `UPDATE ai_gateway_keys
+          SET status = 'revoked', revoked_at = COALESCE(revoked_at, NOW())
+        WHERE id = $1 AND org_id = $2
+        RETURNING id, label, key_prefix, key_hash`,
+      [req.params.id, req.orgId]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ success: false, error: 'Gateway key not found' });
+    const row = r.rows[0];
+    gatewayKeys.bustCache(row.key_hash);
+    audit.fromReq(req, {
+      event: 'ai_gateway.key_revoked',
+      targetType: 'ai_gateway_key',
+      targetId: String(row.id),
+      meta: { key_id: row.id, key_prefix: row.key_prefix, label: row.label },
+    });
+    res.json({ success: true, revoked: { id: row.id, label: row.label, key_prefix: row.key_prefix } });
+  } catch (err) {
+    if (req.log) req.log.error('gateway_key_revoke_failed', { error: err });
+    res.status(500).json({ success: false, error: 'Failed to revoke gateway key' });
   }
 });
 

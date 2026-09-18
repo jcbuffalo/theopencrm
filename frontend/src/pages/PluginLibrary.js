@@ -16,6 +16,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../api';
+import { useAuth } from '../AuthContext';
 import Nav from '../components/Nav';
 import { Alert, Button, Card, Container, EmptyState, Icon, PageHeader, Skeleton } from '../components/ui';
 
@@ -69,12 +70,16 @@ function integrationSetup(flag) {
     || { label: String(flag).replace(/[-_]/g, ' '), to: '/admin/integrations' };
 }
 
-function ExtensionCard({ item, state, onEnable, onCustomize }) {
+function ExtensionCard({ item, state, isOrgAdmin, onEnable, onCustomize, onSetMode }) {
   const badge = triggerBadge(item.triggerEvent);
   const setup = integrationSetup(item.requiredIntegration);
   const enabled = state.active;
   const installed = state.installed;
   const busy = state.busy;
+  const autonomous = state.runMode === 'autonomous';
+  // "Run autonomously" opt-in for the Enable click. Default OFF, admin-only —
+  // autonomous extensions apply their changes without a human Apply step.
+  const [autoChecked, setAutoChecked] = useState(false);
 
   return (
     <Card className="flex flex-col h-full" bodyClassName="flex flex-col h-full">
@@ -125,19 +130,53 @@ function ExtensionCard({ item, state, onEnable, onCustomize }) {
 
       <div className="mt-4">
         {enabled ? (
-          <Button
-            variant="secondary"
-            fullWidth
-            icon="check"
-            disabled
-            className="!border-success-300 !bg-success-50 !text-success-700 !opacity-100"
-          >
-            Enabled
-          </Button>
+          <>
+            <Button
+              variant="secondary"
+              fullWidth
+              icon="check"
+              disabled
+              className="!border-success-300 !bg-success-50 !text-success-700 !opacity-100"
+            >
+              Enabled{autonomous ? ' · autonomous' : ''}
+            </Button>
+            {isOrgAdmin && state.pluginId && (
+              <label className="mt-2 flex items-start gap-2 text-[11px] text-gray-600 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={autonomous}
+                  disabled={busy === 'mode'}
+                  onChange={(e) => onSetMode(item, e.target.checked ? 'autonomous' : 'preview')}
+                />
+                <span>
+                  <span className="font-medium text-gray-700">Run autonomously</span>
+                  {' — '}applies its changes immediately (tasks created, fields updated) without an Apply step. Switch back any time.
+                </span>
+              </label>
+            )}
+          </>
         ) : (
-          <Button fullWidth onClick={() => onEnable(item)} disabled={busy} loading={busy === 'enable'} loadingLabel="Enabling…">
-            {installed ? 'Turn on' : 'Enable'}
-          </Button>
+          <>
+            <Button fullWidth onClick={() => onEnable(item, autoChecked)} disabled={busy} loading={busy === 'enable'} loadingLabel="Enabling…">
+              {installed ? 'Turn on' : 'Enable'}
+            </Button>
+            {isOrgAdmin && (
+              <label className="mt-2 flex items-start gap-2 text-[11px] text-gray-600 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={autoChecked}
+                  disabled={!!busy}
+                  onChange={(e) => setAutoChecked(e.target.checked)}
+                />
+                <span>
+                  <span className="font-medium text-gray-700">Run autonomously</span>
+                  {' — '}autonomous extensions apply their changes immediately (tasks created, fields updated) without an Apply step. You can switch back any time.
+                </span>
+              </label>
+            )}
+          </>
         )}
         <div className="mt-1.5 flex items-center justify-center gap-1 text-[11px]">
           {enabled ? (
@@ -164,6 +203,8 @@ function ExtensionCard({ item, state, onEnable, onCustomize }) {
 
 export default function PluginLibrary() {
   const navigate = useNavigate();
+  const { orgRole } = useAuth();
+  const isOrgAdmin = ['owner', 'admin'].includes(orgRole);
   const [items, setItems] = useState(null);
   const [error, setError] = useState('');
   const [featureDisabled, setFeatureDisabled] = useState(false);
@@ -185,6 +226,7 @@ export default function PluginLibrary() {
             installed: !!it.installed,
             active: !!it.active,
             pluginId: it.installed_plugin_id || null,
+            runMode: it.installed_run_mode || 'preview',
             busy: false,
           };
         }
@@ -204,24 +246,50 @@ export default function PluginLibrary() {
 
   // One-click Enable: install + activate atomically. Idempotent server-side —
   // an existing clone is activated in place, never duplicated.
-  const enable = async (item) => {
+  const enable = async (item, autonomous = false) => {
     setSlugState(item.slug, { busy: 'enable' });
     setError('');
     try {
-      const r = await api.post('/plugins/from-template', { template_id: item.slug, activate: true });
+      const body = { template_id: item.slug, activate: true };
+      // Owner/admin opted into autonomous mode: the extension applies its
+      // changes immediately, no Apply step. Server-side this is admin-gated
+      // exactly like PATCH /plugins/:id/run-mode.
+      if (autonomous) body.run_mode = 'autonomous';
+      const r = await api.post('/plugins/from-template', body);
       const plugin = r.data?.plugin;
       setSlugState(item.slug, {
         busy: false,
         installed: true,
         active: plugin?.status === 'active',
         pluginId: plugin?.id || null,
+        runMode: plugin?.run_mode || (autonomous ? 'autonomous' : 'preview'),
       });
-      setToast(r.data?.already_active
+      const modeNote = autonomous ? ' Autonomous: its changes apply immediately, no Apply step.' : '';
+      setToast(r.data?.already_active && !r.data?.run_mode_changed
         ? `"${item.name}" was already on.`
-        : `"${item.name}" is on. It runs ${triggerBadge(item.triggerEvent).label.toLowerCase().replace(/^runs /, '')} from now on.`);
+        : `"${item.name}" is on. It runs ${triggerBadge(item.triggerEvent).label.toLowerCase().replace(/^runs /, '')} from now on.${modeNote}`);
     } catch (err) {
       setSlugState(item.slug, { busy: false });
       setError(err.response?.data?.error || err.message || 'Enable failed');
+    }
+  };
+
+  // Flip an already-enabled extension between confirm-first preview and
+  // autonomous (owner/admin only; PATCH /plugins/:id/run-mode, audited).
+  const setMode = async (item, runMode) => {
+    const st = cardState[item.slug];
+    if (!st?.pluginId) return;
+    setSlugState(item.slug, { busy: 'mode' });
+    setError('');
+    try {
+      await api.patch(`/plugins/${st.pluginId}/run-mode`, { run_mode: runMode });
+      setSlugState(item.slug, { busy: false, runMode });
+      setToast(runMode === 'autonomous'
+        ? `"${item.name}" now runs autonomously — its changes apply immediately, without an Apply step.`
+        : `"${item.name}" is back to confirm-first — its changes wait for an Apply.`);
+    } catch (err) {
+      setSlugState(item.slug, { busy: false });
+      setError(err.response?.data?.error || err.message || 'Mode change failed');
     }
   };
 
@@ -363,9 +431,11 @@ export default function PluginLibrary() {
                     <ExtensionCard
                       key={item.slug}
                       item={item}
-                      state={cardState[item.slug] || { installed: !!item.installed, active: !!item.active, pluginId: item.installed_plugin_id || null, busy: false }}
+                      state={cardState[item.slug] || { installed: !!item.installed, active: !!item.active, pluginId: item.installed_plugin_id || null, runMode: item.installed_run_mode || 'preview', busy: false }}
+                      isOrgAdmin={isOrgAdmin}
                       onEnable={enable}
                       onCustomize={customize}
+                      onSetMode={setMode}
                     />
                   ))}
                 </div>
@@ -375,7 +445,9 @@ export default function PluginLibrary() {
 
           <p className="text-xs text-gray-500">
             Enabled extensions run automatically on their trigger; drafts stay off until you activate them.
-            Every run is sandboxed, and any CRM changes an extension proposes still need an owner/admin to apply them.
+            Every run is sandboxed. By default an extension's CRM changes wait for an owner/admin to Apply them;
+            an owner/admin can opt a specific extension into autonomous mode, where its changes apply immediately —
+            and switch it back at any time.
           </p>
         </div>
       </Container>

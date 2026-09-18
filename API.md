@@ -712,6 +712,40 @@ hide upgrade CTAs gracefully.
 
 ---
 
+## Extension autonomous mode (migration 167 — 2026-09-18)
+
+`PATCH /api/plugins/:id/run-mode` `{ run_mode: 'preview'|'autonomous' }` — org
+owner/admin; audited (`plugin.run_mode_changed`). Autonomous plugins auto-apply a
+SUCCESSFUL run's proposals through the shared apply machinery
+(`services/pluginActions.applyRunProposals`) for every entry point (manual, chat,
+event, schedule); failed runs never commit; all sandbox caps unchanged; writes audited
+with `autonomous: true`. `run_mode` appears on plugin list/detail/run payloads and the
+library's `installed_run_mode`; install endpoints accept `{ run_mode }`
+(non-admin requesting autonomous → 403).
+
+## AI Gateway (spec 202 v1, migration 168 — 2026-09-18)
+
+`POST /api/gateway/v1/messages` — metered Anthropic Messages proxy for SELF-HOSTED
+instances. Auth: `ocrm_gw_` key via `Authorization: Bearer` or `x-api-key` (SHA-256 at
+rest, 30s cache); CSRF-exempt, sessionless, 60/min per key, 1MB body, model allowlist,
+`max_tokens ≤ 8192`, streaming/tools rejected with clear 400s (v1). The org's full AI
+billing verdict runs BEFORE the upstream call (past_due grace / halted / hard cap →
+402 with the verdict code); usage meters into `ai_usage_events` (`endpoint='gateway'`,
+2× upcharge) exactly like hosted; response carries `X-OpenCRM-Charged-USD`. Prompt and
+completion content are never logged. 503 when the platform key is unconfigured.
+
+Key management (`canManageOrgBilling`; minting requires `ai_billing_status ∈
+(active, comped)` else 402 `AI_BILLING_REQUIRED_FOR_GATEWAY`): `GET/POST
+/api/billing/ai/gateway-keys` (plaintext shown once), `DELETE
+/api/billing/ai/gateway-keys/:id` (busts the proxy cache). UI: the "AI Gateway" card
+on `/settings#billing`.
+
+Self-host client side: set `OPENCRM_AI_GATEWAY_KEY` (+ optional
+`OPENCRM_AI_GATEWAY_URL`, default `https://app.theopencrm.com/api/gateway`) — used
+when no org BYO key and no platform `ANTHROPIC_API_KEY`; the local free-tier quota is
+exempted (the gateway bills and caps) and `GET /api/ai/status` reports
+`billing.status: 'gateway'`.
+
 ## Extension platform additions (2026-09-17)
 
 Plugins: GET /api/plugins/library now returns per-entry installed/active status for the caller org; POST /api/plugins/from-template and POST /api/plugins/library/:slug/install accept { activate: true } for atomic install+activate (services/extensionInstall.js). Event + schedule triggers: see PLUGIN_SDK_REFERENCE.md Triggers.

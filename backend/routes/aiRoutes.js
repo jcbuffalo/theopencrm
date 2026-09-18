@@ -1010,11 +1010,16 @@ router.post('/actions/apply', authMiddleware, async (req, res) => {
       if (!isOrgAdminReq(req)) {
         return res.status(403).json({ error: 'Only an org owner/admin can install extensions' });
       }
+      // run_mode was validated by the chatActions spec ('preview'|'autonomous');
+      // 'autonomous' reversed the confirm-first posture, so it rides the same
+      // owner/admin gate as the install itself (checked just above).
+      const requestedRunMode = action.fields.run_mode === 'autonomous' ? 'autonomous' : undefined;
       const result = await extensionInstall.installLibraryTemplate({
         orgId: req.orgId,
         userId: req.userId,
         slug: action.fields.slug,
         activate: action.fields.activate !== false, // default: install AND turn on
+        runMode: requestedRunMode,
         log: req.log,
       });
       if (!result.body || !result.body.success) {
@@ -1034,23 +1039,101 @@ router.post('/actions/apply', authMiddleware, async (req, res) => {
           name: row.name,
           status: row.status,
           activated: !!result.body.activated,
+          ...(requestedRunMode ? { run_mode: requestedRunMode } : {}),
         },
       });
+      // Autonomous granted at install time gets the same dedicated audit row
+      // as PATCH /api/plugins/:id/run-mode.
+      if (requestedRunMode === 'autonomous') {
+        audit.fromReq(req, {
+          event: audit.EVENTS.PLUGIN_RUN_MODE_CHANGED,
+          targetType: 'plugin',
+          targetId: row.id,
+          success: true,
+          meta: { old: 'preview', new: 'autonomous', via: 'chat' },
+        });
+      }
       return res.json({
         ok: true,
         applied: {
           plugin_id: row.id,
           name: row.name,
           status: row.status,
+          run_mode: row.run_mode || (requestedRunMode || 'preview'),
           template_slug: action.fields.slug,
           already_active: !!result.body.already_active,
           open_path: '/plugins/library',
           open_label: 'Open extension library',
-          note: result.body.already_active
+          note: (result.body.already_active && !result.body.run_mode_changed)
             ? 'This extension was already installed and turned on — nothing changed.'
-            : row.status === 'active'
-              ? 'Installed and turned on. Manage it from the Plugins page.'
-              : 'Installed as a draft. Activate it from the Plugins page when ready.',
+            : (row.status === 'active'
+              ? (requestedRunMode === 'autonomous'
+                ? 'Installed and turned on in AUTONOMOUS mode — it applies its changes immediately, no Apply step. Switch it back any time from the plugin page.'
+                : 'Installed and turned on. Manage it from the Plugins page.')
+              : 'Installed as a draft. Activate it from the Plugins page when ready.'),
+        },
+      });
+    }
+
+    // Extension run-mode change (service action) — the chat mirror of
+    // PATCH /api/plugins/:id/run-mode. Same org-scoped UPDATE, same
+    // plugin.run_mode_changed audit row. Owner/admin re-checked here (the
+    // spec's requiresAdmin was enforced at propose time; a stale/tampered
+    // proposal cannot bypass this gate).
+    if (action.entity === 'extension' && action.op === 'set_mode') {
+      if (!req.orgId) return res.status(400).json({ error: 'Org context required' });
+      if (!isOrgAdminReq(req)) {
+        return res.status(403).json({ error: 'Only an org owner/admin can change how an extension applies its changes' });
+      }
+      const pluginId = Number(action.fields.plugin_id);
+      const nextMode = action.fields.run_mode; // spec-validated: 'preview' | 'autonomous'
+      const cur = await pool.query(
+        `SELECT id, name, run_mode FROM plugins WHERE id = $1 AND org_id = $2`,
+        [pluginId, req.orgId]
+      );
+      if (cur.rows.length === 0) {
+        return res.status(404).json({ error: `Plugin #${pluginId} was not found in your org` });
+      }
+      const oldMode = cur.rows[0].run_mode || 'preview';
+      let row = cur.rows[0];
+      if (oldMode !== nextMode) {
+        const upd = await pool.query(
+          `UPDATE plugins
+              SET run_mode = $1, updated_at = CURRENT_TIMESTAMP, updated_by = $2,
+                  entity_version = entity_version + 1
+            WHERE id = $3 AND org_id = $4
+            RETURNING id, name, status, run_mode`,
+          [nextMode, req.userId, pluginId, req.orgId]
+        );
+        if (upd.rows.length === 0) {
+          return res.status(404).json({ error: `Plugin #${pluginId} was not found in your org` });
+        }
+        row = upd.rows[0];
+        audit.fromReq(req, {
+          event: audit.EVENTS.PLUGIN_RUN_MODE_CHANGED,
+          targetType: 'plugin',
+          targetId: pluginId,
+          success: true,
+          meta: { old: oldMode, new: nextMode, via: 'chat' },
+        });
+      }
+      audit.fromReq(req, {
+        event: audit.EVENTS.AI_ACTION_APPLIED,
+        targetType: 'plugin',
+        targetId: pluginId,
+        meta: { op: action.op, run_mode: nextMode, old_run_mode: oldMode, name: row.name },
+      });
+      return res.json({
+        ok: true,
+        applied: {
+          plugin_id: pluginId,
+          name: row.name,
+          run_mode: nextMode,
+          open_path: `/plugins/${pluginId}`,
+          open_label: 'Open plugin',
+          note: nextMode === 'autonomous'
+            ? `"${row.name}" now runs autonomously — its changes apply immediately (tasks created, fields updated) with no Apply step. Every safety cap and the auto-pause net stay in force; switch back any time.`
+            : `"${row.name}" is back to confirm-first — its proposed changes will wait for an owner/admin to Apply them.`,
         },
       });
     }
@@ -2550,6 +2633,10 @@ function buildChatToolRunner(req) {
       };
     }
     const activate = input?.activate !== false; // default: install AND turn on
+    // AUTONOMOUS (migration 167) — opt-in, default false. The proposal card's
+    // summary states plainly that the extension will apply its changes
+    // automatically; apply threads run_mode through to installLibraryTemplate.
+    const autonomous = input?.autonomous === true;
 
     // Already installed + on → nothing to propose; point at the live plugin.
     let installedStatus = null;
@@ -2568,6 +2655,7 @@ function buildChatToolRunner(req) {
     const proposal = await buildProposal('extension', 'install', undefined, {
       slug,
       activate,
+      ...(autonomous ? { run_mode: 'autonomous' } : {}),
       name: tpl.name,
       trigger_event: tpl.spec.triggerEvent,
       extension_summary: tpl.summary,
@@ -2583,12 +2671,65 @@ function buildChatToolRunner(req) {
         trigger_event: tpl.spec.triggerEvent,
         tags: tpl.tags || [],
         required_integration: tpl.requiredIntegration || null,
+        run_mode: autonomous ? 'autonomous' : 'preview',
       },
+      ...(autonomous
+        ? { autonomous_note: 'This proposal enables AUTONOMOUS mode: the extension will apply its changes immediately (tasks created, fields updated) without an Apply step. Say that plainly to the user. They can switch back any time (propose_set_extension_mode or the plugin page).' }
+        : {}),
       ...(installedStatus && !installedStatus.active
         ? { note: `Already installed as "${installedStatus.status}" (plugin #${installedStatus.plugin_id}) — applying turns that existing copy on instead of duplicating it.` }
         : {}),
       ...(tpl.requiredIntegration
         ? { setup_note: `This extension needs the ${tpl.requiredIntegration} integration connected before it can do its job — mention that to the user.` }
+        : {}),
+      apply_requires: 'org owner/admin',
+    };
+  }
+
+  // Flip an existing extension between confirm-first 'preview' and
+  // 'autonomous' (migration 167). Confirm-first like every propose_* tool:
+  // the card states the consequence plainly; /actions/apply runs the same
+  // org-scoped UPDATE + plugin.run_mode_changed audit as
+  // PATCH /api/plugins/:id/run-mode. Owner/admin at propose AND apply.
+  async function propose_set_extension_mode(input) {
+    const pluginId = Number(input?.plugin_id);
+    const runMode = typeof input?.run_mode === 'string' ? input.run_mode : '';
+    if (!Number.isInteger(pluginId) || pluginId <= 0) {
+      return { error: 'invalid', validation_errors: ['plugin_id must be a positive integer — find it with list_extensions (installed_plugin_id) or the Plugins page'] };
+    }
+    if (!['preview', 'autonomous'].includes(runMode)) {
+      return { error: 'invalid', validation_errors: ["run_mode must be 'preview' or 'autonomous'"] };
+    }
+    if (!req.orgId) {
+      return { error: 'org_required', detail: 'Extensions live in an organization workspace.' };
+    }
+    // Resolve the plugin (org-scoped) so the card names it and a same-mode
+    // no-op is caught before proposing.
+    const r = await pool.query(
+      `SELECT id, name, status, run_mode FROM plugins WHERE id = $1 AND org_id = $2`,
+      [pluginId, req.orgId]
+    );
+    if (r.rows.length === 0) {
+      return { error: 'not_found', detail: `No plugin #${pluginId} in this org. Use list_extensions or the Plugins page to find the right id.` };
+    }
+    const row = r.rows[0];
+    if ((row.run_mode || 'preview') === runMode) {
+      return {
+        error: 'unchanged',
+        detail: `"${row.name}" is already in ${runMode} mode. Nothing to do.`,
+      };
+    }
+    const proposal = await buildProposal('extension', 'set_mode', undefined, {
+      plugin_id: pluginId,
+      run_mode: runMode,
+      name: row.name,
+    });
+    if (proposal.error) return proposal;
+    return {
+      ...proposal,
+      current_mode: row.run_mode || 'preview',
+      ...(runMode === 'autonomous'
+        ? { autonomous_note: 'Applying lets this extension apply its changes immediately (tasks created, fields updated) without an Apply step. Say that plainly to the user. All sandbox caps and the auto-pause safety net stay in force.' }
         : {}),
       apply_requires: 'org owner/admin',
     };
@@ -2943,6 +3084,7 @@ function buildChatToolRunner(req) {
       case 'propose_set_feature_flag': return await propose_set_feature_flag(input);
       case 'propose_build_plugin':    return await propose_build_plugin(input);
       case 'propose_install_extension': return await propose_install_extension(input);
+      case 'propose_set_extension_mode': return await propose_set_extension_mode(input);
       // Workspace-building surface — confirm-first like the rest.
       case 'propose_add_custom_field': return await propose_add_custom_field(input);
       case 'propose_automation_rule': return await propose_automation_rule(input);

@@ -49,6 +49,7 @@ const audit = require('./audit');
 const quotaEnforcer = require('./quotaEnforcer');
 const usageMeter = require('./usageMeter');
 const pluginSdk = require('./pluginSdk');
+const pluginActions = require('./pluginActions');
 
 // Load isolated-vm lazily so the module still loads in dev environments
 // where the native build failed. If require() throws, run() will short-
@@ -314,6 +315,7 @@ async function finalizeRun(runId, fields) {
     db_queries = 0,
     egress_bytes = 0,
     proposed_actions = null,
+    run_mode = null,
   } = fields;
   // memory_peak_bytes was removed in migration 081 — isolated-vm doesn't
   // expose a peak after dispose(), so the column always stored 0. Anyone
@@ -322,6 +324,10 @@ async function finalizeRun(runId, fields) {
   //
   // proposed_actions (migration 113) holds the confirm-first write proposals a
   // preview run captured; NULL for read-only runs and legacy rows.
+  //
+  // run_mode (migration 167) records which posture governed this run
+  // ('preview' | 'autonomous' | legacy 'commit'); NULL for runs rejected
+  // before the plugin row was loaded — readers treat NULL as 'preview'.
   await pool.query(
     `UPDATE plugin_runs
         SET ended_at = NOW(),
@@ -333,14 +339,16 @@ async function finalizeRun(runId, fields) {
             cpu_ms = $6,
             db_queries = $7,
             egress_bytes = $8,
-            proposed_actions = $9::jsonb
-      WHERE id = $10`,
+            proposed_actions = $9::jsonb,
+            run_mode = COALESCE($10, run_mode)
+      WHERE id = $11`,
     [
       status, error_message, result_summary,
       output_payload ? JSON.stringify(output_payload) : null,
       log_lines,
       Math.round(cpu_ms), db_queries, egress_bytes,
       proposed_actions ? JSON.stringify(proposed_actions) : null,
+      run_mode,
       runId,
     ]
   );
@@ -389,6 +397,12 @@ async function run(...args) {
   //                         only so the pluginSdk direct-write unit tests stay
   //                         valid. Defaulting to 'preview' means a caller that
   //                         forgets `mode` can NEVER have a plugin write directly.
+  //
+  // AUTONOMOUS (migration 167): independent of this arg, a plugin whose row
+  // carries run_mode='autonomous' (owner/admin-set) still executes in the
+  // preview capture posture, but its successful runs' proposals are
+  // auto-applied after finalize via pluginActions.applyRunProposals — the
+  // same commit machinery as POST /:id/apply. See the AUTO-APPLY block below.
   let pluginId, orgId, userId, triggerSource, triggerKind, triggerData, input, mode;
   if (args.length === 1 && typeof args[0] === 'object' && args[0] !== null) {
     const o = args[0];
@@ -512,6 +526,13 @@ async function run(...args) {
   let status = 'error';
   let errorMessage = null;
   let output = null;
+  // Effective run posture (migration 167). Resolved from the plugin row once
+  // it loads: an org owner/admin can flip plugins.run_mode to 'autonomous',
+  // in which case a SUCCESSFUL run's proposals are auto-applied below through
+  // the same commit machinery as POST /:id/apply. The legacy 'commit' arg
+  // (test-only) is recorded honestly. Until the plugin row loads this stays
+  // null — early rejections record no mode.
+  let runModeUsed = mode === 'commit' ? 'commit' : null;
 
   // Claim the concurrency slot IMMEDIATELY before the try whose finally{}
   // releases it. Keeping the increment adjacent to the try (rather than up
@@ -544,7 +565,7 @@ async function run(...args) {
 
     // Load plugin spec. Cross-org access is structurally blocked.
     const pluginRes = await pool.query(
-      `SELECT id, name, status, source_code, spec_json FROM plugins WHERE id = $1 AND org_id = $2`,
+      `SELECT id, name, status, source_code, spec_json, run_mode FROM plugins WHERE id = $1 AND org_id = $2`,
       [pluginId, orgId]
     );
     if (pluginRes.rows.length === 0) {
@@ -554,6 +575,13 @@ async function run(...args) {
       return { ok: false, status, reason: 'plugin_not_found', runId };
     }
     const plugin = pluginRes.rows[0];
+    // Resolve the effective posture. The plugin's stored run_mode governs ALL
+    // of its runs uniformly — manual, chat, event-triggered, and scheduled —
+    // one coherent rule. Anything but an explicit 'autonomous' is 'preview'
+    // (the legacy test-only 'commit' arg wins if the caller passed it).
+    if (mode !== 'commit') {
+      runModeUsed = plugin.run_mode === 'autonomous' ? 'autonomous' : 'preview';
+    }
     if (plugin.status !== 'active') {
       status = 'rejected';
       errorMessage = `plugin_status_is_${plugin.status}`;
@@ -766,9 +794,56 @@ async function run(...args) {
       db_queries: counters.db_queries,
       egress_bytes: 0,
       proposed_actions: proposalsToPersist,
+      run_mode: runModeUsed,
     });
   } catch (err) {
     logger.error('plugin_run_finalize_failed', { runId, error: err.message });
+  }
+
+  // ---------------------------------------------------------------------------
+  // AUTONOMOUS AUTO-APPLY (migration 167). When an org owner/admin has set the
+  // plugin's run_mode to 'autonomous', a SUCCESSFUL run's proposals are applied
+  // immediately — through pluginActions.applyRunProposals, the EXACT commit
+  // machinery POST /api/plugins/:id/apply uses (same server-side proposal load,
+  // same allowlist re-validation, same org-scoped transaction + applied_at
+  // guard). There is deliberately no second write path: the sandbox still ran
+  // in the confirm-first capture posture with every cap enforced (query/task
+  // budgets, wall clock); only the Apply step is automated. Failed / partial
+  // runs never reach here because proposalsToPersist is null unless
+  // status === 'success' — so a half-computed proposal set is never committed.
+  // An auto-apply failure leaves the proposals pending on the run row for a
+  // human to Apply from the runs UI; the run itself still reports success.
+  // ---------------------------------------------------------------------------
+  let autoApply = null;
+  if (runModeUsed === 'autonomous' && status === 'success' && proposalsToPersist) {
+    try {
+      const outcome = await pluginActions.applyRunProposals({
+        runId, pluginId, orgId, appliedBy: userId || null,
+      });
+      if (outcome.ok) {
+        autoApply = { applied: true, result: outcome.result };
+        // Same per-write audit granularity as the human Apply endpoint, with
+        // autonomous:true so forensics can tell the two apart.
+        for (const a of outcome.result.applied) {
+          if (!a.ok) continue;
+          audit.record({
+            event: audit.EVENTS.PLUGIN_ACTION_APPLIED,
+            actorUserId: userId, orgId,
+            targetType: a.entity, targetId: a.target_id,
+            success: true,
+            meta: { runId, plugin_id: pluginId, op: a.op, autonomous: true },
+          }).catch(() => {});
+        }
+      } else {
+        autoApply = { applied: false, error: outcome.error, code: outcome.code || null };
+        logger.warn('plugin_autonomous_apply_rejected', {
+          runId, pluginId, orgId, error: outcome.error, code: outcome.code,
+        });
+      }
+    } catch (err) {
+      autoApply = { applied: false, error: err.message };
+      logger.error('plugin_autonomous_apply_failed', { runId, pluginId, orgId, error: err.message });
+    }
   }
 
   // Meter the run for billing. Fire-and-forget; meter failures are logged
@@ -792,6 +867,8 @@ async function run(...args) {
       db_queries: counters.db_queries,
       log_lines: logBuffer.length,
       error: errorMessage,
+      run_mode: runModeUsed,
+      ...(autoApply ? { auto_applied: autoApply.applied, auto_applied_count: autoApply.result ? autoApply.result.applied_count : 0 } : {}),
     },
   }).catch(() => {});
 
@@ -805,6 +882,14 @@ async function run(...args) {
     cpu_ms: elapsedMs,
     db_queries: counters.db_queries,
     mode,
+    // The posture that governed this run: 'preview' | 'autonomous' | 'commit'
+    // (null when the run was rejected before the plugin row loaded).
+    run_mode: runModeUsed,
+    // Autonomous auto-apply outcome. Null unless run_mode='autonomous' AND
+    // the run succeeded with proposals: { applied: true, result } on commit,
+    // { applied: false, error, code? } when the apply was rejected/failed
+    // (proposals stay pending for a human Apply).
+    auto_apply: autoApply,
     // Confirm-first proposals the caller can Apply. Always an array so the
     // client can `.length` it unconditionally. Empty for read-only runs, for
     // 'commit' mode, and for runs that didn't finish successfully.

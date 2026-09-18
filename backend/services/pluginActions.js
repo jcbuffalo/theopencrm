@@ -35,6 +35,7 @@
 // already-reviewed pluginSdk surface (which mirrors routes/_bulkOps.js). No
 // widening, no narrowing of the existing plugin write surface.
 
+const pool = require('../db');
 const pluginSdk = require('./pluginSdk');
 
 /**
@@ -153,4 +154,140 @@ async function applyProposal(client, action, scope) {
   return r.rows[0] || null;
 }
 
-module.exports = { validateProposal, referencedIds, applyProposal };
+/**
+ * THE commit machinery for plugin-proposed writes — the single path through
+ * which a stored proposal set reaches the DB. Shared by:
+ *   • POST /api/plugins/:id/apply (routes/pluginRoutes.js) — the human
+ *     confirm-first Apply button, and
+ *   • pluginRunner's autonomous auto-apply (migration 167) — a plugin an org
+ *     owner/admin flipped to run_mode='autonomous' has its SUCCESSFUL runs'
+ *     proposals applied here immediately after the run, with `appliedBy`
+ *     recording who/what triggered it (null for unattended triggered runs).
+ *
+ * Steps (identical for both callers):
+ *   1. load the run's proposed_actions SERVER-SIDE, hard-scoped to the org,
+ *   2. applied_at idempotency guard (re-asserted under FOR UPDATE),
+ *   3. re-validate every proposal against the plugin write allowlist,
+ *   4. ownership pre-flight for referenced ids,
+ *   5. apply all proposals in ONE org-scoped transaction and stamp
+ *      applied_at / applied_by / applied_result on the run row.
+ *
+ * Returns { ok:true, result:{ applied, applied_count, total } } or
+ * { ok:false, http, error, code?, validation_errors? } for the caller to
+ * translate. Throws only on unexpected DB errors (transaction already rolled
+ * back). Callers own the audit trail.
+ */
+async function applyRunProposals({ runId, pluginId, orgId, appliedBy = null }) {
+  if (!Number.isInteger(orgId) || orgId <= 0) {
+    return { ok: false, http: 400, error: 'Org context required' };
+  }
+  // Load the run, joined to its plugin, and hard-scope BOTH to the org. A run
+  // from another org (or another plugin) is a 404 — never applied.
+  const runRes = await pool.query(
+    `SELECT r.id, r.plugin_id, r.org_id, r.status, r.proposed_actions, r.applied_at
+       FROM plugin_runs r
+       JOIN plugins p ON p.id = r.plugin_id
+      WHERE r.id = $1 AND r.plugin_id = $2 AND r.org_id = $3 AND p.org_id = $3`,
+    [runId, pluginId, orgId]
+  );
+  if (runRes.rows.length === 0) {
+    return { ok: false, http: 404, error: 'Run not found for this plugin in your org' };
+  }
+  const run = runRes.rows[0];
+
+  // Idempotency: a run's proposals apply at most once.
+  if (run.applied_at) {
+    return { ok: false, http: 409, error: 'This run has already been applied', code: 'ALREADY_APPLIED' };
+  }
+
+  const proposals = Array.isArray(run.proposed_actions) ? run.proposed_actions : [];
+  if (proposals.length === 0) {
+    return { ok: false, http: 400, error: 'This run proposed no changes to apply', code: 'NO_PROPOSALS' };
+  }
+
+  // Re-validate every proposal from scratch against the plugin write
+  // allowlist. The stored row is untrusted — a tampered field is stripped or
+  // the whole proposal rejected here.
+  const validated = [];
+  for (let i = 0; i < proposals.length; i++) {
+    const v = validateProposal(proposals[i]);
+    if (!v.ok) {
+      return {
+        ok: false,
+        http: 400,
+        error: `Proposal #${i + 1} failed re-validation`,
+        code: 'PROPOSAL_REJECTED',
+        validation_errors: v.errors,
+      };
+    }
+    validated.push(v.action);
+  }
+
+  // Ownership pre-flight for referenced ids (task contact_id / deal_id) BEFORE
+  // opening the transaction, so a cross-org ref can never be written.
+  const scope = { orgId, userId: appliedBy };
+  for (const action of validated) {
+    for (const ref of referencedIds(action)) {
+      const r = await pool.query(`SELECT 1 FROM ${ref.table} WHERE id = $1 AND org_id = $2`, [ref.id, orgId]);
+      if (r.rows.length === 0) {
+        return {
+          ok: false,
+          http: 404,
+          error: `${ref.field} #${ref.id} was not found in your org`,
+          code: 'REF_NOT_IN_ORG',
+        };
+      }
+    }
+  }
+
+  const client = await pool.connect();
+  const applied = [];
+  try {
+    await client.query('BEGIN');
+    // Re-assert the not-yet-applied invariant inside the transaction and lock
+    // the row so two concurrent applies (human click racing an autonomous
+    // apply, or two clicks) can't double-write.
+    const lock = await client.query(
+      `SELECT applied_at FROM plugin_runs WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+      [runId, orgId]
+    );
+    if (lock.rows.length === 0) {
+      await client.query('ROLLBACK').catch(() => {});
+      return { ok: false, http: 404, error: 'Run not found for this plugin in your org' };
+    }
+    if (lock.rows[0].applied_at) {
+      await client.query('ROLLBACK').catch(() => {});
+      return { ok: false, http: 409, error: 'This run has already been applied', code: 'ALREADY_APPLIED' };
+    }
+
+    for (const action of validated) {
+      const row = await applyProposal(client, action, scope);
+      applied.push({
+        entity: action.entity,
+        op: action.op,
+        target_id: action.op === 'update' ? action.target_id : (row ? row.id : null),
+        ok: !!row,
+        // A null row means the org-scoped WHERE matched nothing (e.g. the
+        // record was deleted between preview and apply). We record it as
+        // not-applied rather than failing the whole batch.
+        skipped: !row,
+      });
+    }
+
+    const result = { applied, applied_count: applied.filter((a) => a.ok).length, total: applied.length };
+    await client.query(
+      `UPDATE plugin_runs SET applied_at = NOW(), applied_by = $1, applied_result = $2::jsonb
+        WHERE id = $3 AND org_id = $4`,
+      [appliedBy, JSON.stringify(result), runId, orgId]
+    );
+    await client.query('COMMIT');
+    return { ok: true, result };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { validateProposal, referencedIds, applyProposal, applyRunProposals };

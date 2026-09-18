@@ -141,6 +141,17 @@ async function evaluateAiBilling({ orgId, userId, log } = {}) {
     // failure) and is a no-op under NODE_ENV=test unless opted in.
     if (await orgAiKeys.getOrgKey(orgId)) return allow('byo_key', { reason: 'byo_key' });
 
+    // Gateway mode (spec 202): a SELF-HOSTED instance routing AI through the
+    // hosted metered proxy (OPENCRM_AI_GATEWAY_KEY set, no local platform
+    // key). The gateway enforces billing on the hosted side, so the local
+    // gate lets calls through and status surfaces report mode 'gateway' —
+    // the exact mirror of the byo_key allow above. Never true on the hosted
+    // platform itself (it always has ANTHROPIC_API_KEY and never a gateway
+    // key), so hosted behavior is unchanged.
+    if (process.env.OPENCRM_AI_GATEWAY_KEY && !process.env.ANTHROPIC_API_KEY) {
+      return allow('gateway', { reason: 'gateway_key' });
+    }
+
     // Super-admin always bypasses. Operator self-testing must work even when
     // the operator's own org is unbilled.
     if (await isSuperAdminCached(userId)) return allow('super_admin', { reason: 'super_admin' });
