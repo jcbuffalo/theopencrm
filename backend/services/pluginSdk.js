@@ -39,6 +39,32 @@ const pool = require('../db');
 
 const MAX_ROWS = 500; // hard cap on any list*() return
 
+// ---------------------------------------------------------------------------
+// crm.ai.complete — the ONLY AI surface inside the sandbox.
+//
+// Routed through services/ai.callClaude with endpoint='plugin-run', so
+// metering (ai_usage_events row, org attribution, the 2× platform upcharge)
+// is automatic — a plugin can never burn un-metered tokens. The billing gate
+// (middleware/requireAiBilling.evaluateAiBilling) is evaluated INSIDE the
+// call path, mirroring what the HTTP routes enforce, so an autonomous
+// scheduled/triggered run can never bypass billing state or the monthly hard
+// cap. A blocked verdict returns { ok:false, configured:true, blocked:true }
+// to the plugin (it never throws the run); AI-unconfigured returns the
+// platform-standard { configured: false } shape. Neither of those charges
+// the per-run AI budget — the budget counts UPSTREAM Claude calls only.
+// ---------------------------------------------------------------------------
+const MAX_AI_CALLS_PER_RUN = 2;       // upstream Claude calls per plugin run
+const AI_MAX_TOKENS_CAP = 1024;       // hard ceiling on max_tokens
+const AI_DEFAULT_MAX_TOKENS = 512;    // default when the plugin doesn't ask
+const AI_MAX_PROMPT_CHARS = 8192;     // ~8KB prompt cap
+const AI_MAX_SYSTEM_CHARS = 2048;     // system prompt cap
+
+// Required at module scope (not lazily) to match codebase style; there is no
+// require cycle (ai.js and requireAiBilling.js never require pluginSdk).
+// Called through the module objects so tests can live-stub them.
+const aiService = require('./ai');
+const aiBilling = require('../middleware/requireAiBilling');
+
 // Hard cap on the number of DB-touching SDK calls a single plugin run can
 // make. Each `crm.getDeal / listDeals / get* / list* / update* / createTask`
 // call increments `counters.db_queries` and is checked against this ceiling
@@ -78,6 +104,17 @@ class PluginTaskBudgetExceeded extends Error {
   constructor() {
     super(`Plugin exceeded the per-run createTask budget of ${MAX_TASKS_CREATED_PER_RUN}.`);
     this.code = 'PLUGIN_TASK_BUDGET_EXCEEDED';
+  }
+}
+
+// Thrown on the (MAX_AI_CALLS_PER_RUN + 1)th crm.ai.complete call that would
+// actually reach the Claude API. Unconfigured / billing-blocked attempts do
+// NOT charge this budget (they return a soft { ok:false } shape instead), so
+// the sentinel only ever fires for real token-burning attempts.
+class PluginAiBudgetExceeded extends Error {
+  constructor() {
+    super(`Plugin exceeded the per-run AI call budget of ${MAX_AI_CALLS_PER_RUN} crm.ai.complete calls.`);
+    this.code = 'PLUGIN_AI_BUDGET_EXCEEDED';
   }
 }
 
@@ -314,8 +351,22 @@ function buildWhere(table, filter) {
  *                                    after a dry-run. Each entry:
  *                                    { entity, op, table, target_id, fields,
  *                                      before, summary }.
+ * @param {number} [opts.userId]   - the run initiator, when there is one
+ *                                    (manual / chat runs). Attributed on
+ *                                    ai_usage_events rows and consulted by the
+ *                                    billing verdict. Null for scheduled and
+ *                                    event-triggered runs.
+ * @param {function} [opts.extendDeadline] - callback the AI path invokes just
+ *                                    before an upstream Claude call goes out.
+ *                                    The runner's implementation grants extra
+ *                                    wall-clock headroom (bounded by its
+ *                                    absolute ceiling) and returns the NEW
+ *                                    absolute deadline (ms since epoch), which
+ *                                    replaces the deadline used by every
+ *                                    subsequent budget check. Optional — the
+ *                                    direct-harness/test path omits it.
  */
-function buildContext({ orgId, logBuffer, counters, deadline = null, dryRun = false, proposedActions = null }) {
+function buildContext({ orgId, logBuffer, counters, deadline = null, dryRun = false, proposedActions = null, userId = null, extendDeadline = null }) {
   if (!Number.isInteger(orgId) || orgId <= 0) {
     throw new Error('orgId is required and must be a positive integer');
   }
@@ -339,6 +390,15 @@ function buildContext({ orgId, logBuffer, counters, deadline = null, dryRun = fa
   // is the more actionable error message ("you tried to create too many
   // tasks" vs "you used up your query budget").
   if (typeof counters.tasks_created !== 'number') counters.tasks_created = 0;
+  // ai_calls counts UPSTREAM Claude calls made via crm.ai.complete —
+  // independent of the query budget (an AI call is not a DB call).
+  if (typeof counters.ai_calls !== 'number') counters.ai_calls = 0;
+
+  // The wall-clock deadline is mutable: a crm.ai.complete call about to go
+  // upstream asks the runner (via extendDeadline) for latency headroom and
+  // stores the returned NEW absolute deadline here, so DB/AI budget checks
+  // after a slow-but-legitimate AI wait don't spuriously trip the time limit.
+  let deadlineMs = deadline;
 
   // chargeQuery() is called at the TOP of every DB-bound SDK function before
   // the pg query goes out. It increments first, then validates — so the
@@ -352,7 +412,7 @@ function buildContext({ orgId, logBuffer, counters, deadline = null, dryRun = fa
     // Wall-clock self-limit. Checked BEFORE incrementing the query counter so
     // a run that runs out of time doesn't record a phantom over-budget query
     // and, crucially, doesn't open another pg connection past the deadline.
-    if (deadline && Date.now() > deadline) {
+    if (deadlineMs && Date.now() > deadlineMs) {
       throw new PluginTimeBudgetExceeded();
     }
     counters.db_queries += 1;
@@ -370,6 +430,137 @@ function buildContext({ orgId, logBuffer, counters, deadline = null, dryRun = fa
     if (counters.tasks_created > MAX_TASKS_CREATED_PER_RUN) {
       throw new PluginTaskBudgetExceeded();
     }
+  }
+
+  // chargeAiCall() gates the crm.ai.complete path. Called only when the call
+  // is actually about to go upstream (after the configured + billing checks),
+  // so unconfigured/blocked fallback loops in library entries never burn the
+  // budget or kill the run. Same increment-then-validate semantics as the
+  // other charges so the over-budget attempt is visible in the counter.
+  function chargeAiCall() {
+    if (deadlineMs && Date.now() > deadlineMs) {
+      throw new PluginTimeBudgetExceeded();
+    }
+    counters.ai_calls += 1;
+    if (counters.ai_calls > MAX_AI_CALLS_PER_RUN) {
+      throw new PluginAiBudgetExceeded();
+    }
+  }
+
+  // Shared log-buffer writer (same caps as crm.log — 200 lines, 2KB/line).
+  function pushLog(message) {
+    if (logBuffer.length >= 200) return;
+    const s = (typeof message === 'string' ? message : JSON.stringify(message ?? null)).slice(0, 2048);
+    logBuffer.push(s);
+  }
+
+  // crm.ai.complete({ prompt, max_tokens?, system? }) — see the header block
+  // near MAX_AI_CALLS_PER_RUN for the full contract. Returns:
+  //   { ok: true, text, tokens: { input_tokens, output_tokens }, model }
+  //   { ok: false, configured: false, message }            (AI not configured)
+  //   { ok: false, configured: true, blocked: true, code, message }
+  //                                                        (billing verdict / quota)
+  //   { ok: false, configured: true, code, message }       (upstream API error)
+  // Throws (ending the run) only on invalid arguments, the AI-call budget,
+  // or the wall-clock time budget.
+  async function aiComplete(opts) {
+    if (!opts || typeof opts !== 'object' || Array.isArray(opts)) {
+      throw new Error('ai.complete: options must be an object like { prompt, max_tokens?, system? }');
+    }
+    const prompt = typeof opts.prompt === 'string' ? opts.prompt : '';
+    if (!prompt.trim()) throw new Error('ai.complete: prompt is required');
+    if (prompt.length > AI_MAX_PROMPT_CHARS) {
+      throw new Error(`ai.complete: prompt exceeds the ${AI_MAX_PROMPT_CHARS}-character cap`);
+    }
+    let maxTokens = AI_DEFAULT_MAX_TOKENS;
+    if (opts.max_tokens !== undefined && opts.max_tokens !== null) {
+      const n = Number(opts.max_tokens);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error('ai.complete: max_tokens must be a positive integer');
+      }
+      maxTokens = Math.min(n, AI_MAX_TOKENS_CAP);
+    }
+    const system = opts.system !== undefined && opts.system !== null
+      ? String(opts.system).slice(0, AI_MAX_SYSTEM_CHARS)
+      : undefined;
+
+    // 1. Configured? Same graceful shape as every other AI surface. Checked
+    //    before the budget so unconfigured orgs degrade instead of erroring.
+    if (!(await aiService.isConfiguredForOrg(orgId))) {
+      return {
+        ok: false,
+        configured: false,
+        message: 'AI is not configured for this workspace.',
+      };
+    }
+
+    // 2. Billing verdict — the SAME evaluation the HTTP routes enforce
+    //    (requireAiBilling), run in-path so autonomous/scheduled runs can
+    //    never bypass billing state, the trial window, or the hard cap.
+    //    A blocked verdict is a soft result, never a thrown run failure.
+    const verdict = await aiBilling.evaluateAiBilling({ orgId, userId });
+    if (!verdict.allowed) {
+      pushLog(`crm.ai.complete blocked: ${verdict.code || verdict.status || 'billing'}`);
+      return {
+        ok: false,
+        configured: true,
+        blocked: true,
+        code: verdict.code || null,
+        message: verdict.message || 'AI billing is not active for this workspace.',
+      };
+    }
+
+    // 3. Budget — counts only calls that reach this point (real token burn).
+    chargeAiCall();
+
+    // 4. Wall-clock headroom for upstream latency, granted by the runner
+    //    BEFORE the call goes out so the wait itself can't trip the deadline.
+    if (typeof extendDeadline === 'function') {
+      const extended = extendDeadline();
+      if (typeof extended === 'number' && extended > 0) deadlineMs = extended;
+    }
+
+    // 5. The metered call. callClaude records ai_usage_events (org + user
+    //    attribution, endpoint='plugin-run', upcharge) and the usage_meter
+    //    aggregate internally — metering cannot be skipped from here.
+    const result = await aiService.callClaude({
+      system,
+      messages: [{ role: 'user', content: prompt }],
+      maxTokens,
+      orgId,
+      userId,
+      endpoint: 'plugin-run',
+    });
+
+    if (result.configured === false) {
+      return { ok: false, configured: false, message: result.message || 'AI is not configured.' };
+    }
+    if (!result.ok) {
+      pushLog(`crm.ai.complete failed: ${result.code || result.error || 'unknown_error'}`);
+      return {
+        ok: false,
+        configured: true,
+        // QUOTA_EXCEEDED is the in-call quota gate — semantically a block,
+        // so plugins can branch on `blocked` alone for their fallback path.
+        blocked: result.code === 'QUOTA_EXCEEDED',
+        code: result.code || null,
+        message: result.error || 'AI call failed.',
+      };
+    }
+
+    const usage = result.usage || {};
+    const tokens = {
+      input_tokens: Number(usage.input_tokens || 0),
+      output_tokens: Number(usage.output_tokens || 0),
+    };
+    // One log line per call: model + tokens + whether the platform charged
+    // for it (byo_key/gateway rows are $0 locally). NEVER the prompt content.
+    pushLog(
+      `crm.ai.complete: model=${result.model} input_tokens=${tokens.input_tokens} ` +
+      `output_tokens=${tokens.output_tokens} billing=${result.billing_mode} ` +
+      `charged=${result.billing_mode === 'platform'} call=${counters.ai_calls}/${MAX_AI_CALLS_PER_RUN}`
+    );
+    return { ok: true, text: result.text, tokens, model: result.model };
   }
 
   async function getOne(table, id) {
@@ -490,14 +681,17 @@ function buildContext({ orgId, logBuffer, counters, deadline = null, dryRun = fa
       return r.rows[0];
     },
 
+    // AI — the metered, billing-gated completion bridge. Exposed BOTH as the
+    // nested namespace plugins call (crm.ai.complete) and as the flat
+    // `aiComplete` name the runner bridges into the isolate (the prelude
+    // rebuilds the nested shape inside the sandbox).
+    ai: Object.freeze({ complete: aiComplete }),
+    aiComplete,
+
     // Logging — pushed into the run's log buffer, capped at 200 lines, each
     // line capped at 2KB. Caps prevent a plugin from filling memory or the
     // DB with a runaway log.
-    log: (message) => {
-      if (logBuffer.length >= 200) return; // silently drop further lines
-      const s = (typeof message === 'string' ? message : JSON.stringify(message ?? null)).slice(0, 2048);
-      logBuffer.push(s);
-    },
+    log: pushLog,
   };
 }
 
@@ -509,10 +703,16 @@ module.exports = {
   MAX_ROWS,
   MAX_QUERIES_PER_RUN,
   MAX_TASKS_CREATED_PER_RUN,
+  MAX_AI_CALLS_PER_RUN,
+  AI_MAX_TOKENS_CAP,
+  AI_DEFAULT_MAX_TOKENS,
+  AI_MAX_PROMPT_CHARS,
+  AI_MAX_SYSTEM_CHARS,
   PLUGIN_STATEMENT_TIMEOUT,
   PluginQueryBudgetExceeded,
   PluginTaskBudgetExceeded,
   PluginTimeBudgetExceeded,
+  PluginAiBudgetExceeded,
   // Shared with the confirm-first apply layer (services/pluginActions.js) so
   // the re-validation on Apply uses the exact same allowlist + normalization
   // the preview captured.

@@ -2182,6 +2182,8 @@ function buildChatToolRunner(req) {
   const ERROR_HINTS = {
     PLUGIN_QUERY_BUDGET_EXCEEDED:
       'The plugin exceeded its per-run DB-query budget (50 calls). See backend/services/pluginSdk.js → MAX_QUERIES_PER_RUN. Refactor the plugin to batch queries or filter earlier.',
+    PLUGIN_AI_BUDGET_EXCEEDED:
+      'The plugin exceeded its per-run AI budget (2 upstream crm.ai.complete calls). See backend/services/pluginSdk.js → MAX_AI_CALLS_PER_RUN. Batch prompts into fewer calls; unconfigured/billing-blocked attempts do not count.',
     PLUGIN_SANDBOX_UNAVAILABLE:
       'The isolated-vm native module failed to load on this server. Plugins cannot run until the operator fixes the deployment. See backend/services/pluginRunner.js header comment.',
     QUOTA_EXCEEDED:

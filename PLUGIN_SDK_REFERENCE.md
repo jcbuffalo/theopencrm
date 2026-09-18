@@ -8,7 +8,7 @@
 
 ## What is a plugin?
 
-A plugin is a **stateless JavaScript function** that receives an `input` object and a `crm` namespace and returns a result. It executes inside a fresh `isolated-vm` v8 Isolate — a sandbox with no filesystem, no network, no Node.js modules, no `process`, no `Buffer`, no timers, no `console`. Every DB-touching call goes through the `crm` namespace, every such call is automatically scoped to the calling org's `org_id`, and the entire run is hard-capped on wall-clock, memory, query count, and task-creation count.
+A plugin is a **stateless JavaScript function** that receives an `input` object and a `crm` namespace and returns a result. It executes inside a fresh `isolated-vm` v8 Isolate — a sandbox with no filesystem, no network, no Node.js modules, no `process`, no `Buffer`, no timers, no `console`. Every DB-touching call goes through the `crm` namespace, every such call is automatically scoped to the calling org's `org_id`, and the entire run is hard-capped on wall-clock, memory, query count, task-creation count, and AI-call count. The one deliberate exception to "no network" is `crm.ai.complete` — a host-bridged, **metered and billing-gated** Claude completion (see the AI section below); the plugin still never touches the network itself.
 
 A run begins when the platform invokes `pluginRunner.run()` (`backend/services/pluginRunner.js:344`); the plugin's source comes from `plugins.source_code`, the runner spins an isolate, the prelude installs `crm`, the user code runs, the result is read back, and the isolate is disposed. The plugin cannot persist anything across runs except through the DB via `crm`.
 
@@ -18,18 +18,27 @@ A run begins when the platform invokes `pluginRunner.run()` (`backend/services/p
 
 | Limit | Value | Constant | Source |
 |---|---|---|---|
-| Wall-clock per run | 5 s | `RUN_TIMEOUT_MS` | `pluginRunner.js:63` |
-| Compile timeout | 1 s | `COMPILE_TIMEOUT_MS` | `pluginRunner.js:62` |
-| Heap | 128 MB | `MEMORY_LIMIT_MB` | `pluginRunner.js:61` |
-| DB-touching SDK calls per run | 50 | `MAX_QUERIES_PER_RUN` | `pluginSdk.js:42` |
-| `createTask` calls per run | 10 | `MAX_TASKS_CREATED_PER_RUN` | `pluginSdk.js:50` |
-| Max rows returned by any `list*` | 500 | `MAX_ROWS` | `pluginSdk.js:34` |
-| Per-statement Postgres timeout | 2 s | `PLUGIN_STATEMENT_TIMEOUT` | `pluginSdk.js:59` |
-| Output payload byte cap | 64 KB | `MAX_OUTPUT_BYTES` | `pluginRunner.js:64` |
-| Log buffer | 200 lines | inline | `pluginSdk.js:367` |
-| Log line size | 2 KB | inline | `pluginSdk.js:368` |
-| Concurrent runs per org (per process) | 5 | `MAX_CONCURRENT_RUNS_PER_ORG` | `pluginRunner.js:80` |
-| Monthly runs per org | tier-dependent | `quotaEnforcer.TIER_QUOTAS[tier].plugin_runs_per_org_per_month` | `pluginRunner.js:105-132` |
+| Isolate CPU per run | 5 s | `RUN_TIMEOUT_MS` | `pluginRunner.js:70` |
+| Total wall clock per run (host-side) | 15 s base | `HARD_WALL_CLOCK_MS` | `pluginRunner.js:81` |
+| Wall-clock extension per upstream AI call | +15 s (granted at call time) | `AI_CALL_WALL_CLOCK_EXTENSION_MS` | `pluginRunner.js:93` |
+| Absolute wall-clock ceiling | 45 s | `MAX_TOTAL_WALL_CLOCK_MS` | `pluginRunner.js:94` |
+| Compile timeout | 1 s | `COMPILE_TIMEOUT_MS` | `pluginRunner.js:69` |
+| Heap | 128 MB | `MEMORY_LIMIT_MB` | `pluginRunner.js:68` |
+| DB-touching SDK calls per run | 50 | `MAX_QUERIES_PER_RUN` | `pluginSdk.js:74` |
+| `createTask` calls per run | 10 | `MAX_TASKS_CREATED_PER_RUN` | `pluginSdk.js:82` |
+| Upstream AI calls per run (`crm.ai.complete`) | 2 | `MAX_AI_CALLS_PER_RUN` | `pluginSdk.js:56` |
+| AI `max_tokens` (default / cap) | 512 / 1024 | `AI_DEFAULT_MAX_TOKENS` / `AI_MAX_TOKENS_CAP` | `pluginSdk.js:57-58` |
+| AI prompt length | 8192 chars | `AI_MAX_PROMPT_CHARS` | `pluginSdk.js:59` |
+| AI `system` length | 2048 chars | `AI_MAX_SYSTEM_CHARS` | `pluginSdk.js:60` |
+| Max rows returned by any `list*` | 500 | `MAX_ROWS` | `pluginSdk.js:40` |
+| Per-statement Postgres timeout | 2 s | `PLUGIN_STATEMENT_TIMEOUT` | `pluginSdk.js:91` |
+| Output payload byte cap | 64 KB | `MAX_OUTPUT_BYTES` | `pluginRunner.js:95` |
+| Log buffer | 200 lines | inline | `pluginSdk.js` (`pushLog`) |
+| Log line size | 2 KB | inline | `pluginSdk.js` (`pushLog`) |
+| Concurrent runs per org (per process) | 5 | `MAX_CONCURRENT_RUNS_PER_ORG` | `pluginRunner.js:111` |
+| Monthly runs per org | tier-dependent | `quotaEnforcer.TIER_QUOTAS[tier].plugin_runs_per_org_per_month` | `pluginRunner.js` (`checkPluginQuota`) |
+
+**Timeout interplay (why an AI call doesn't kill your run):** the 5-second `RUN_TIMEOUT_MS` meters CPU *inside* the isolate only — time parked in a bridged `crm.*` host call (a Postgres query, a Claude completion) does not count against it. The 15-second host-side wall clock is what bounds total elapsed time; each `crm.ai.complete` call that actually goes upstream extends that deadline by 15 s at the moment the call starts (via the runner's `extendWallClockForAiCall`, `pluginRunner.js:657`), never past the 45 s absolute ceiling. Net: 15 s base + 15 s × (up to 2 AI calls) = worst case exactly 45 s; runs that never touch AI keep the unchanged 15 s cap.
 
 ---
 
@@ -127,7 +136,46 @@ await crm.createTask({
 **Errors:** `createTask: data must be an object`, `createTask: title is required`, invalid `contact_id`/`deal_id`, task budget exceeded, query budget exceeded.
 **Budget cost:** 1 against the task budget AND 1 against the query budget. `chargeTask` runs first; if it throws, the query counter is not incremented (`pluginSdk.js:349-354`).
 
-**Note: no creation surface for deals, contacts, or companies.** Only `createTask` exists in v1. This is deliberate — see `pluginSdk.js:333-336`.
+**Note: no creation surface for deals, contacts, or companies.** Only `createTask` exists in v1. This is deliberate — see the comment above `createTask` in `pluginSdk.js`.
+
+### AI
+
+#### `crm.ai.complete({ prompt, max_tokens?, system? })`
+
+The sandbox's only AI surface — a **metered, billing-gated** Claude completion executed on the host (`pluginSdk.js:466`, bridged as `__host_aiComplete` in `pluginRunner.js`). The plugin never sees a network primitive; the host routes the call through `services/ai.callClaude` with `endpoint: 'plugin-run'`, so every upstream call automatically lands an org-attributed `ai_usage_events` row (with the platform's 2× upcharge when the deployment key is used) plus the `usage_meter` aggregate. **There is no un-metered way for a plugin to burn tokens.**
+
+```js
+const ai = await crm.ai.complete({
+  prompt: 'Summarize these deals in three bullets:\n' + lines.join('\n'),
+  max_tokens: 400,               // optional; default 512, hard cap 1024
+  system: 'You are terse.',      // optional; truncated to 2048 chars
+});
+if (ai.ok) {
+  await crm.createTask({ title: 'Brief', description: ai.text });
+} else {
+  // ai.configured === false → AI isn't set up for this workspace
+  // ai.blocked === true     → billing verdict / quota says no right now
+  // otherwise               → upstream API error (ai.message has details)
+}
+```
+
+**Args:** `prompt` (required string, ≤ 8192 chars), `max_tokens` (optional positive integer, default 512, capped at 1024), `system` (optional string, truncated to 2048 chars).
+
+**Returns** (never throws for configuration/billing/API outcomes — only for invalid args, the AI budget, or the time budget):
+- `{ ok: true, text, tokens: { input_tokens, output_tokens }, model }` — success.
+- `{ ok: false, configured: false, message }` — AI isn't configured for the org (no org BYO key, no platform key, no gateway key). The platform-standard graceful-degradation shape.
+- `{ ok: false, configured: true, blocked: true, code, message }` — the org may not burn AI right now. The billing verdict is the **same** `evaluateAiBilling` the HTTP routes enforce (`middleware/requireAiBilling.js`), evaluated inside the call path — so an autonomous scheduled/triggered run can never bypass billing state, an expired trial, past-due lockout, an admin halt, the monthly hard cap, or the AI quota (`code: 'QUOTA_EXCEEDED'`).
+- `{ ok: false, configured: true, code, message }` — upstream API error.
+
+**Budget:** max **2 upstream calls per run** (`MAX_AI_CALLS_PER_RUN`). Only calls that pass the configured + billing checks charge the budget — a fallback loop in an unconfigured org can call `crm.ai.complete` freely and just keeps getting `{ configured: false }`. The 3rd upstream-bound call throws `PluginAiBudgetExceeded` (code `PLUGIN_AI_BUDGET_EXCEEDED`), which ends the run with `status='error'` and the message `Plugin exceeded the per-run AI call budget of 2 crm.ai.complete calls.`
+
+**Wall clock:** each upstream call grants the run +15 s of host-side wall clock (45 s absolute ceiling) — see the timeout-interplay note under Quotas. AI latency does not burn the 5 s isolate CPU budget.
+
+**Query budget cost:** 0 — an AI call is not a DB call.
+
+**Logging:** every upstream call appends one run-log line — `crm.ai.complete: model=… input_tokens=… output_tokens=… billing=… charged=… call=n/2` — model + token counts + billing mode only, **never the prompt or completion content**. Blocked/failed attempts log a one-line reason (`crm.ai.complete blocked: …`).
+
+**Authoring contract (library standard):** always branch on the result — put `ai.text` into your task/description when `ok`, and degrade to embedding the copilot brief (the prompt a human can paste into `/chat`) when `configured === false` or `blocked === true`. Never `throw` on a not-ok AI result.
 
 ### Logging
 
@@ -161,8 +209,8 @@ The runner classifies the catch on every failed run into one of these. The class
 | Status | Trigger | Source |
 |---|---|---|
 | `success` (alias `ok`) | Run completed and returned a value | `pluginRunner.js:567` |
-| `error` | Generic uncaught throw from user code; message captured (truncated to 4096 chars) | `pluginRunner.js:601-602` |
-| `timeout` | Run exceeded `RUN_TIMEOUT_MS` (5 s) | `pluginRunner.js:594-596` |
+| `error` | Generic uncaught throw from user code; message captured (truncated to 4096 chars). **Also the status for an exceeded AI-call budget** (code `PLUGIN_AI_BUDGET_EXCEEDED` → normalized message, no dedicated status value) | `pluginRunner.js` (classifier) |
+| `timeout` | Run exceeded the isolate CPU budget (`RUN_TIMEOUT_MS`, 5 s) or the host-side wall clock (15 s base, +15 s per AI call, 45 s ceiling) | `pluginRunner.js` (classifier) |
 | `memory_exceeded` | Heap exceeded `MEMORY_LIMIT_MB` (128 MB) | `pluginRunner.js:591-593` |
 | `killed` | `isolate.dispose()` happened mid-execution (only reachable via host-side cancel; rare) | `pluginRunner.js:597-599` |
 | `quota_exceeded` | Monthly plugin-run quota exhausted; isolate never spun | `pluginRunner.js:454-466` |
@@ -180,7 +228,7 @@ Removed by the prelude after host references are bridged in (`pluginRunner.js:20
 
 - `console` — use `crm.log()`. `console.log` is undefined inside the isolate; calling it throws `ReferenceError`.
 - `setTimeout`, `setInterval`, `setImmediate`, `clearTimeout`, `clearInterval`, `clearImmediate`, `queueMicrotask` — there is no way to schedule work. Your code runs to completion within 5 s wall-clock or it is killed.
-- `fetch`, `XMLHttpRequest`, `WebSocket` — no network. Plugins are pure compute + DB-via-SDK.
+- `fetch`, `XMLHttpRequest`, `WebSocket` — no network. Plugins are pure compute + DB-via-SDK + the metered `crm.ai.complete` bridge (which runs on the HOST — the isolate itself still has zero network access).
 - `Buffer` — no binary types.
 - `process` — no env access, no `process.exit`, no `process.cwd`.
 - `require`, `module.require`, `import` (dynamic) — there is no module loader. A polyfill of `module.exports` is allowed *only* for the "the user code assigned `module.exports.run`" detection (`pluginRunner.js:240`).
@@ -217,7 +265,8 @@ Available v8 globals (intentionally): `Math`, `JSON`, `Date`, `Promise`, `Array`
 
 ## Authoring tips
 
-- **Keep runs short.** 5 seconds is real; the wall-clock includes time spent in `crm.*` calls round-tripping through Postgres.
+- **Keep runs short.** The budgets are real: 5 s of isolate CPU, 15 s of total wall clock (extended +15 s per upstream AI call, 45 s ceiling). DB round-trips count against the wall clock, not the CPU budget.
+- **Use AI sparingly and degrade honestly.** `crm.ai.complete` is metered against the org (2 upstream calls per run, 1024-token cap). Always handle `{ configured: false }` and `{ blocked: true }` by falling back — e.g. embed the prompt as a "copilot brief" in the task you create — never by throwing.
 - **Batch reads.** A single `crm.listDeals({owner_id: 7})` is one query. Looping `crm.getDeal(id)` over a list of ids is N queries — you'll burn the 50-budget fast.
 - **Don't log PII.** `crm.log()` lines persist into `plugin_runs.log_lines`. Anyone with run-view rights in the org can read them. That is a side-channel — see `THREAT_MODEL.md` §5.
 - **Use `crm.log`, never `console.log`.** `console` is undefined inside the sandbox; the call throws `ReferenceError`.
@@ -303,6 +352,36 @@ module.exports = {
 };
 ```
 
+### 4. AI-drafted follow-up brief (metered, graceful fallback)
+
+```js
+// On closed-won, create a thank-you task. With AI on, the note is drafted
+// into the task; with AI off/blocked, the task carries the copilot brief.
+module.exports = {
+  async run({ crm, input }) {
+    const deal = await crm.getDeal(input.dealId);
+    if (!deal) return { skipped: true };
+    const brief = `Write a short, warm thank-you note about the signed deal "${deal.title}".`;
+    const ai = await crm.ai.complete({ prompt: brief + ' Output the note only.', max_tokens: 300 });
+    await crm.createTask({
+      title: `Send thank-you: ${deal.title}`,
+      description: ai.ok
+        ? 'AI draft (review before sending):\n' + ai.text
+        : 'Copilot brief (paste into chat to draft it): ' + brief,
+      deal_id: deal.id,
+      priority: 'high',
+    });
+    return { drafted: ai.ok };
+  },
+};
+```
+
+---
+
+## Declarative `spec_json.actions` are metadata, not an execution plan
+
+The runner executes **only `source_code`** — it never interprets `spec_json.actions`. The action list (`create_task`, `set_field`, `claude_complete`, …) exists so `describe_plugin` and the library UI can explain a plugin's behavior without exposing raw source. In particular, a `claude_complete` action does **not** make the runner call Claude: runnable AI behavior comes from `source_code` calling `await crm.ai.complete({...})`, and the declarative entry should mirror what the source actually does. (Validator source of truth: `backend/services/pluginSpecValidator.js` `ACTION_KINDS`.)
+
 ---
 
 ## Common authoring mistakes
@@ -342,7 +421,7 @@ console.log('hello');  // ReferenceError: console is not defined — the run fai
 const r = await fetch('https://example.com/api');  // ReferenceError: fetch is not defined.
 ```
 
-**Fix:** plugins have no network. Pre-fetch data on the host side and pass it in `input`, or build a backend route that fronts the third-party API.
+**Fix:** plugins have no network. Pre-fetch data on the host side and pass it in `input`, or build a backend route that fronts the third-party API. (For AI specifically, use `crm.ai.complete` — the one sanctioned, metered bridge.)
 
 **Setting `org_id` in a patch.**
 

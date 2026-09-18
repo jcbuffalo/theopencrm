@@ -23,6 +23,13 @@
 //
 // vitest globals.
 
+// AI determinism: the AI-flavored entries now call crm.ai.complete in their
+// source. Default posture for this suite is UNCONFIGURED (they take the
+// copilot-brief fallback); the dedicated describe below opts into configured
+// mode explicitly. Clear any keys leaked from the shell.
+delete process.env.ANTHROPIC_API_KEY;
+delete process.env.OPENCRM_AI_GATEWAY_KEY;
+
 const realPool = require('../db');
 const mockPool = realPool;
 mockPool.query   = vi.fn();
@@ -30,6 +37,23 @@ mockPool.connect = vi.fn();
 
 const featureFlags = require('../services/featureFlags');
 featureFlags.hasFeature = vi.fn().mockResolvedValue(true);
+
+// Live-module stubs for the AI seam (configured-mode smoke runs go through
+// the REAL services/ai.callClaude with a mocked Anthropic wire).
+const usageMeterLive = require('../services/usageMeter');
+usageMeterLive.increment = vi.fn().mockResolvedValue(null);
+usageMeterLive.recordAiUsage = vi.fn().mockResolvedValue(null);
+const aiMetering = require('../services/aiMetering');
+aiMetering.recordUsage = vi.fn().mockResolvedValue(null);
+const quotaEnforcer = require('../services/quotaEnforcer');
+quotaEnforcer.getSeatCount = vi.fn().mockResolvedValue(1);
+quotaEnforcer.checkAiQuota = vi.fn().mockResolvedValue(null);
+const aiModel = require('../services/aiModel');
+aiModel.getOrgAiSettings = vi.fn().mockResolvedValue({ model: 'claude-sonnet-4-6', effort: 'low' });
+const orgAiKeys = require('../services/orgAiKeys');
+orgAiKeys.getOrgKey = vi.fn().mockResolvedValue(null);
+const aiBilling = require('../middleware/requireAiBilling');
+const origEvaluateAiBilling = aiBilling.evaluateAiBilling;
 
 const audit = require('../services/audit');
 audit.record  = vi.fn().mockResolvedValue(null);
@@ -440,6 +464,7 @@ describe('plugin library — smoke runs (confirm-first preview over stub pool)',
     const { counters, proposedActions } = await smokeRun(entry, representativeInput(entry));
     expect(counters.db_queries).toBeLessThanOrEqual(50);
     expect(counters.tasks_created || 0).toBeLessThanOrEqual(10);
+    expect(counters.ai_calls || 0).toBeLessThanOrEqual(2);
     // Every proposal captured must be a well-formed confirm-first action.
     for (const p of proposedActions) {
       expect(['create', 'update']).toContain(p.op);
@@ -463,5 +488,112 @@ describe('plugin library — smoke runs (confirm-first preview over stub pool)',
       if (proposedActions.length > 0) entriesProposing++;
     }
     expect(entriesProposing).toBeGreaterThanOrEqual(20);
+  });
+});
+
+// ===========================================================================
+// 5. AI-flavored entries — real crm.ai.complete output when AI is on,
+//    prompt-embedding fallback when it is not. The seven entries tagged 'ai'
+//    now call `await crm.ai.complete(...)` in their source; the AI text (not
+//    a pasted prompt) must land in the created task when AI is configured.
+// ===========================================================================
+const AI_SLUGS = [
+  'monday-pipeline-brief',
+  'post-close-thank-you',
+  'gone-quiet-reengagement',
+  'month-end-win-recap',
+  'daily-deal-prep-brief',
+  'eod-wrapup-summary',
+  'new-company-research-pack',
+];
+const AI_TEXT = 'MOCK-AI-OUTPUT: crisp, specific, ready to use.';
+
+function aiEntries() {
+  return AI_SLUGS.map(slug => [slug, pluginLibrary.getBySlug(slug)]);
+}
+
+describe('plugin library — AI-flavored entries (crm.ai.complete)', () => {
+  test('the seven ai-tagged entries all exist, are runnable, and call crm.ai.complete', () => {
+    for (const [slug, entry] of aiEntries()) {
+      expect(entry, `${slug} missing from the library`).toBeTruthy();
+      expect(entry.tags).toContain('ai');
+      expect(entry.spec.source_code).toContain('crm.ai.complete');
+    }
+    // And no OTHER entry sneaks an AI call in without the tag.
+    for (const entry of RUNNABLE) {
+      if (AI_SLUGS.includes(entry.slug)) continue;
+      expect(entry.spec.source_code).not.toContain('crm.ai.complete');
+    }
+  });
+
+  describe('configured mode — real AI output lands in the task', () => {
+    beforeEach(() => {
+      process.env.ANTHROPIC_API_KEY = 'platform-key-for-vitest';
+      aiBilling.evaluateAiBilling = vi.fn().mockResolvedValue({
+        allowed: true, status: 'active', code: null, action: null, message: null,
+      });
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          content: [{ type: 'text', text: AI_TEXT }],
+          usage: { input_tokens: 500, output_tokens: 90 },
+          model: 'claude-sonnet-4-6',
+        }),
+      });
+    });
+    afterEach(() => {
+      delete process.env.ANTHROPIC_API_KEY;
+      aiBilling.evaluateAiBilling = origEvaluateAiBilling;
+    });
+
+    test.each(aiEntries())('%s puts the REAL AI text into a created task', async (slug, entry) => {
+      const { counters, proposedActions } = await smokeRun(entry, representativeInput(entry));
+      expect(counters.ai_calls).toBeGreaterThanOrEqual(1);
+      expect(counters.ai_calls).toBeLessThanOrEqual(2);
+      const creates = proposedActions.filter(p => p.op === 'create' && p.table === 'tasks');
+      expect(creates.length).toBeGreaterThan(0);
+      const withAi = creates.filter(p => String(p.fields.description || '').includes(AI_TEXT));
+      expect(withAi.length, `${slug} should embed the AI output in a task description`).toBeGreaterThan(0);
+    });
+  });
+
+  describe('unconfigured mode — graceful prompt-embedding fallback', () => {
+    test.each(aiEntries())('%s falls back and never claims AI output', async (slug, entry) => {
+      // No ANTHROPIC_API_KEY in this suite by default (cleared at the top).
+      const { counters, proposedActions } = await smokeRun(entry, representativeInput(entry));
+      expect(counters.ai_calls || 0).toBe(0); // unconfigured attempts don't charge the budget
+      const creates = proposedActions.filter(p => p.op === 'create' && p.table === 'tasks');
+      expect(creates.length).toBeGreaterThan(0);
+      for (const p of creates) {
+        const desc = String(p.fields.description || '');
+        expect(desc).not.toContain(AI_TEXT);
+        expect(desc).not.toContain('AI draft');
+        expect(desc).not.toContain('AI briefing');
+      }
+      // The fallback keeps the copilot-usable guidance in the task.
+      const guidance = creates.some(p => /[Cc]opilot/.test(String(p.fields.description || '')));
+      expect(guidance, `${slug} fallback should keep the copilot guidance`).toBe(true);
+    });
+
+    test('a blocked billing verdict takes the same fallback path (no run failure)', async () => {
+      process.env.ANTHROPIC_API_KEY = 'platform-key-for-vitest';
+      aiBilling.evaluateAiBilling = vi.fn().mockResolvedValue({
+        allowed: false, status: 'halted', code: 'AI_BILLING_HALTED',
+        action: 'contact_admin', message: 'halted',
+      });
+      globalThis.fetch = vi.fn();
+      try {
+        const entry = pluginLibrary.getBySlug('post-close-thank-you');
+        const { counters, proposedActions } = await smokeRun(entry, representativeInput(entry));
+        expect(counters.ai_calls || 0).toBe(0);
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+        const create = proposedActions.find(p => p.op === 'create');
+        expect(String(create.fields.description)).toContain('Copilot brief');
+      } finally {
+        delete process.env.ANTHROPIC_API_KEY;
+        aiBilling.evaluateAiBilling = origEvaluateAiBilling;
+      }
+    });
   });
 });

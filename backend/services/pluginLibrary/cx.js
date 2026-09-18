@@ -142,7 +142,7 @@ module.exports = {
     category: 'cx',
     icon: '💌',
     summary:
-      'A personal thank-you inside 48 hours of signing is the cheapest retention tool that exists — and the easiest to forget. When a deal closes won, this creates a high-priority task with the customer\'s details and a ready-to-run copilot brief for a warm, specific thank-you note. Works without AI (the task carries the talking points); with AI enabled, the copilot drafts it in one click.',
+      'A personal thank-you inside 48 hours of signing is the cheapest retention tool that exists — and the easiest to forget. When a deal closes won, this creates a high-priority task with the customer\'s details. With AI enabled, the warm, specific thank-you note is drafted right into the task, ready to review and send (metered per-org); without AI, the task carries the talking points and a ready-to-run copilot brief instead.',
     tags: ['post-sale', 'ai', 'relationship'],
     spec: {
       name: 'post-close-thank-you',
@@ -172,19 +172,27 @@ module.exports = {
     var due = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
     var brief = 'Write a short, warm thank-you email to ' + name + ' about the signed deal "' + title +
       '". Two short paragraphs, no salesy language, mention we are excited to get started.';
+    // Metered in-run AI: draft the note now so the task is ready to send.
+    // Falls back to embedding the copilot brief when AI is unconfigured or
+    // billing-blocked.
+    var draft = null;
+    var ai = await crm.ai.complete({ prompt: brief + ' Output the email body only.', max_tokens: 400 });
+    if (ai && ai.ok && ai.text) draft = ai.text;
     await crm.createTask({
       title: 'Send thank-you note: ' + title,
       description: 'A personal thank-you within 48 hours of signing sets the tone for the whole relationship.\\n' +
         (contact && contact.email ? 'Send to: ' + contact.email + '\\n' : '') +
         'Talking points: thank them for their trust, name one specific thing you are excited to deliver, and say who their point of contact is.\\n' +
-        'Copilot brief (paste into chat to draft it): ' + brief,
+        (draft
+          ? 'AI draft (review before sending):\\n' + draft
+          : 'Copilot brief (paste into chat to draft it): ' + brief),
       due_date: due,
       priority: 'high',
       deal_id: deal ? deal.id : null,
       contact_id: contact ? contact.id : null,
     });
-    crm.log('Thank-you task created for ' + title);
-    return { task_created: true };
+    crm.log('Thank-you task created for ' + title + '. AI draft: ' + (draft ? 'yes' : 'no'));
+    return { task_created: true, ai_drafted: !!draft };
   },
 };`,
     },
@@ -250,7 +258,7 @@ module.exports = {
     category: 'cx',
     icon: '🔕',
     summary:
-      'Accounts rarely announce they\'re drifting — they just go quiet. This daily sweep finds companies whose open deals have had no activity in 45+ days and creates a re-engagement task per account (up to six a day), each carrying a copilot brief for a light, non-pushy check-in email. Useful without AI; one-click drafts with it.',
+      'Accounts rarely announce they\'re drifting — they just go quiet. This daily sweep finds companies whose open deals have had no activity in 45+ days and creates a re-engagement task per account (up to six a day). With AI enabled, the two quietest accounts get a light, non-pushy check-in email drafted right into the task (metered per-org); the rest — and every account when AI is off — carry a ready-to-run copilot brief.',
     tags: ['retention', 'ai', 're-engagement'],
     spec: {
       name: 'gone-quiet-reengagement',
@@ -284,6 +292,10 @@ module.exports = {
     var quietIds = Object.keys(lastByCompany).filter(function (id) { return lastByCompany[id] < cutoff; });
     var due = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
     var created = 0;
+    var drafted = 0;
+    // The sandbox allows 2 upstream AI calls per run — spend them on the two
+    // quietest accounts and fall back to the copilot brief for the rest.
+    var aiLeft = 2;
     for (var j = 0; j < quietIds.length && created < 6; j++) {
       var companyId = Number(quietIds[j]);
       var company = await crm.getCompany(companyId);
@@ -291,18 +303,26 @@ module.exports = {
       var days = Math.floor((Date.now() - lastByCompany[quietIds[j]]) / 86400000);
       var brief = 'Draft a light, friendly re-engagement email to ' + company.name +
         '. We have not spoken in ' + days + ' days. Check in on their priorities — no hard sell. Under 100 words.';
+      var draft = null;
+      if (aiLeft > 0) {
+        var ai = await crm.ai.complete({ prompt: brief + ' Output the email body only.', max_tokens: 250 });
+        if (ai && ai.ok && ai.text) { draft = ai.text; aiLeft--; drafted++; }
+        else aiLeft = 0; // unconfigured/blocked/failed — stop trying this run
+      }
       await crm.createTask({
         title: 'Re-engage ' + company.name + ' (' + days + ' days quiet)',
         description: 'No deal activity with this account in ' + days + ' days.\\n' +
           'Reach out with something useful — a relevant idea, a check-in on their priorities, or a quick win from a similar customer.\\n' +
-          'Copilot brief (paste into chat to draft it): ' + brief,
+          (draft
+            ? 'AI draft (review before sending):\\n' + draft
+            : 'Copilot brief (paste into chat to draft it): ' + brief),
         due_date: due,
         priority: 'medium',
       });
       created++;
     }
-    crm.log('Quiet accounts: ' + quietIds.length + '; re-engagement tasks created: ' + created);
-    return { quiet_accounts: quietIds.length, tasks_created: created };
+    crm.log('Quiet accounts: ' + quietIds.length + '; re-engagement tasks created: ' + created + '; AI drafts: ' + drafted);
+    return { quiet_accounts: quietIds.length, tasks_created: created, ai_drafted: drafted };
   },
 };`,
     },

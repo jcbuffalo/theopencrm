@@ -19,18 +19,23 @@
 //     row name).
 //   • spec.triggerEvent MUST be in pluginSpecValidator.TRIGGER_EVENTS.
 //   • spec.actions[] — declarative description of the behavior (validated
-//     action kinds). claude_complete entries describe the AI half; the AI is
-//     metered per-org and every entry must be useful with AI unconfigured.
+//     action kinds; the runner never executes them — only source_code runs).
+//     claude_complete entries describe the AI half the source implements via
+//     crm.ai.complete; the AI is metered per-org and every entry must remain
+//     useful with AI unconfigured (fall back to embedding the copilot brief).
 //   • spec.source_code — the RUNNABLE implementation. The install path
 //     (routes/pluginRoutes.js cloneTemplateForOrg) copies it onto the plugin
 //     row, and the sandbox runner executes exactly this. It must:
 //       - use module.exports = { async run({ crm, input }) { ... } } (never
 //         globalThis assignment — the validator rejects it),
 //       - call ONLY allowlisted crm.* methods (see pluginSpecValidator
-//         SDK_METHOD_ALLOWLIST) — no network, no AI call, no email from the
-//         sandbox,
-//       - stay inside the run budgets: 50 DB calls, 10 createTask, 5s wall
-//         clock (see PLUGIN_SDK_REFERENCE.md) — cap every loop,
+//         SDK_METHOD_ALLOWLIST) — no network, no email from the sandbox; AI
+//         only through `await crm.ai.complete({...})` (metered, billing-
+//         gated, max 2 upstream calls per run — handle { configured:false }
+//         and { blocked:true } results by falling back, never by throwing),
+//       - stay inside the run budgets: 50 DB calls, 10 createTask, 2 AI
+//         calls, 5s isolate CPU / 15s wall clock (+15s per AI call, 45s
+//         ceiling) — see PLUGIN_SDK_REFERENCE.md — cap every loop,
 //       - tolerate ANY input shape, including null (manual test runs) and
 //         whatever payload the event-trigger engine delivers,
 //       - reference only fields on the SDK read allowlists (leads/cases/

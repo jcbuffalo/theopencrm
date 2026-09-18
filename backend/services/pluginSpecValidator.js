@@ -46,8 +46,16 @@ const SDK_METHOD_ALLOWLIST = [
   'getTask', 'listTasks',
   'updateDeal', 'updateContact', 'updateCompany', 'updateTask',
   'createTask',
+  // The metered AI bridge (crm.ai.complete — max 2 upstream calls per run,
+  // billing-gated in-path; see PLUGIN_SDK_REFERENCE.md). Namespaced entries
+  // are matched by the dedicated crm.ai.* scan below, not the flat scan.
+  'ai.complete',
   'log',
 ];
+
+// Methods allowed under the crm.ai.* namespace. Kept separate because the
+// flat `crm.<name>(` regex can't see through the extra dot.
+const AI_NAMESPACE_ALLOWLIST = ['complete'];
 
 // Trigger events the platform recognizes. The fromPrompt system prompt
 // (services/pluginGenerator.js) renders this array inline, so extending it
@@ -75,8 +83,16 @@ const TRIGGER_EVENTS = [
 ];
 
 // Allowed action.kind values in the structured spec_json.actions[] array.
-// These are the high-level building blocks the runner translates into SDK
-// calls — same set the library uses (see pluginLibrary.js).
+//
+// IMPORTANT — actions are DECLARATIVE METADATA, not an execution plan. The
+// runner (services/pluginRunner.js) executes ONLY source_code; it never
+// interprets spec_json.actions. The action list exists so describe_plugin
+// and the library UI can explain a plugin's behavior without exposing raw
+// source. In particular, 'claude_complete' does NOT make the runner call
+// Claude — runnable AI behavior comes from source_code calling
+// `await crm.ai.complete({...})` (metered, billing-gated; see
+// PLUGIN_SDK_REFERENCE.md). A claude_complete action should mirror what the
+// source actually does with crm.ai.complete.
 const ACTION_KINDS = [
   'send_email',
   'create_task',
@@ -227,6 +243,21 @@ function validateSpec(spec) {
             `unknown SDK method "crm.${method}". Allowed: ${SDK_METHOD_ALLOWLIST.join(', ')}`);
         }
       }
+      // Namespaced AI calls: `crm.ai.<method>(`. The flat regex above never
+      // matches these (the identifier after `crm.` is followed by another
+      // dot, not `(`), so scan for them explicitly and hold them to the AI
+      // namespace allowlist.
+      const crmAiCallRe = /\bcrm\s*\.\s*ai\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/g;
+      const seenAi = new Set();
+      while ((m = crmAiCallRe.exec(spec.source_code)) !== null) {
+        const method = m[1];
+        if (seenAi.has(method)) continue;
+        seenAi.add(method);
+        if (!AI_NAMESPACE_ALLOWLIST.includes(method)) {
+          pushErr(errors, 'source_code',
+            `unknown SDK method "crm.ai.${method}". Allowed: ${AI_NAMESPACE_ALLOWLIST.map(n => `crm.ai.${n}`).join(', ')}`);
+        }
+      }
     }
   }
 
@@ -257,6 +288,7 @@ function validateSpec(spec) {
 module.exports = {
   validateSpec,
   SDK_METHOD_ALLOWLIST,
+  AI_NAMESPACE_ALLOWLIST,
   TRIGGER_EVENTS,
   ACTION_KINDS,
   DANGEROUS_PATTERNS,

@@ -79,6 +79,19 @@ const RUN_TIMEOUT_MS = 5000;
 // timeout. Sized to comfortably exceed a legitimate 50-query run yet cap the
 // worst case at a small multiple of RUN_TIMEOUT_MS.
 const HARD_WALL_CLOCK_MS = 15000;
+// AI latency headroom (crm.ai.complete). The isolate `timeout` already
+// excludes time parked in applySyncPromise awaiting a host promise, so a slow
+// Claude call never burns the 5s CPU budget — but the HARD_WALL_CLOCK_MS host
+// race above WOULD kill it. Instead of raising the base ceiling for every run,
+// each upstream AI call the SDK is about to make asks the runner (via the
+// extendDeadline callback wired into buildContext) for AI_CALL_WALL_CLOCK_
+// EXTENSION_MS more wall clock, bounded by an absolute per-run ceiling of
+// MAX_TOTAL_WALL_CLOCK_MS. With the SDK's 2-AI-calls-per-run budget the worst
+// case is exactly 15s base + 2 × 15s = the 45s ceiling; runs that never touch
+// AI keep the unchanged 15s cap. The extension re-arms the wall-clock guard
+// timer AND becomes the new deadline for the SDK's own budget checks.
+const AI_CALL_WALL_CLOCK_EXTENSION_MS = 15000;
+const MAX_TOTAL_WALL_CLOCK_MS = 45000;
 const MAX_OUTPUT_BYTES = 64 * 1024; // cap copied-out result payload
 
 // Per-org rough monthly cap. The full tier-aware cap lives in quotaEnforcer;
@@ -171,6 +184,10 @@ const SDK_METHODS = [
   'updateDeal', 'updateContact', 'updateCompany', 'updateTask',
   'createTask',
 ];
+// AI bridge — bridged flat as __host_aiComplete like every other async
+// method, but exposed inside the isolate under the nested namespace
+// crm.ai.complete (the prelude rebuilds the shape).
+const SDK_AI_METHOD = 'aiComplete';
 // `log` is the only fully-synchronous host call (it just pushes to a buffer).
 const SDK_LOG_METHOD = 'log';
 
@@ -194,7 +211,7 @@ function buildIsolatePrelude() {
   // expression on a Reference inside the isolate copies the reference
   // object into a plain JS value without the `.applySync` method. Binding
   // the Reference to a local preserves the method.
-  const localBindings = [...SDK_METHODS, SDK_LOG_METHOD]
+  const localBindings = [...SDK_METHODS, SDK_AI_METHOD, SDK_LOG_METHOD]
     .map(name => `const __r_${name} = globalThis.__host_${name};`)
     .join('\n    ');
 
@@ -208,7 +225,7 @@ function buildIsolatePrelude() {
     `${name}: (...args) => __r_${name}.applySyncPromise(undefined, args.map(v => v === undefined ? null : v), { arguments: { copy: true } })`
   ).join(',\n      ');
 
-  const deletes = [...SDK_METHODS, SDK_LOG_METHOD]
+  const deletes = [...SDK_METHODS, SDK_AI_METHOD, SDK_LOG_METHOD]
     .map(n => `delete globalThis.__host_${n};`)
     .join('\n    ');
 
@@ -216,12 +233,16 @@ function buildIsolatePrelude() {
     'use strict';
     // Verify every host reference is present before we build crm — fail
     // loud if a wiring bug ever ships a half-built sandbox.
-    for (const n of ${JSON.stringify(SDK_METHODS.concat([SDK_LOG_METHOD]))}) {
+    for (const n of ${JSON.stringify(SDK_METHODS.concat([SDK_AI_METHOD, SDK_LOG_METHOD]))}) {
       if (!globalThis['__host_' + n]) throw new Error('plugin sandbox: missing host ref ' + n);
     }
     ${localBindings}
     const crm = Object.freeze({
       ${reads},
+      // Metered AI bridge. Nested namespace by design: crm.ai.complete({...}).
+      ai: Object.freeze({
+        complete: (opts) => __r_${SDK_AI_METHOD}.applySyncPromise(undefined, [opts === undefined ? null : opts], { arguments: { copy: true } })
+      }),
       log: (msg) => __r_${SDK_LOG_METHOD}.applySync(undefined, [typeof msg === 'string' ? msg : JSON.stringify(msg === undefined ? null : msg)], { arguments: { copy: true } })
     });
     Object.defineProperty(globalThis, 'crm', { value: crm, writable: false, configurable: false, enumerable: true });
@@ -621,7 +642,23 @@ async function run(...args) {
     // passed, the next crm.* DB call throws synchronously instead of opening
     // yet another pg connection, so we usually stop cleanly BEFORE the hard
     // race has to dispose the isolate out from under running code.
-    const wallClockDeadline = Date.now() + HARD_WALL_CLOCK_MS;
+    let wallClockDeadline = Date.now() + HARD_WALL_CLOCK_MS;
+    // Absolute per-run ceiling: no amount of AI-call extensions can push the
+    // deadline past this. Computed once, from the same clock reading family.
+    const wallClockCeiling = Date.now() + MAX_TOTAL_WALL_CLOCK_MS;
+    // Re-arm hook for the wall-clock guard timer below. Assigned when the
+    // guard promise is constructed; a no-op until then (AI calls can only
+    // happen while the user script — and therefore the guard — is running).
+    let rearmWallClockGuard = null;
+    // Called by the SDK just before an upstream crm.ai.complete call goes
+    // out: grants AI_CALL_WALL_CLOCK_EXTENSION_MS more wall clock (capped at
+    // the absolute ceiling), re-arms the guard timer, and returns the new
+    // absolute deadline for the SDK's own budget checks.
+    function extendWallClockForAiCall() {
+      wallClockDeadline = Math.min(wallClockDeadline + AI_CALL_WALL_CLOCK_EXTENSION_MS, wallClockCeiling);
+      if (rearmWallClockGuard) rearmWallClockGuard();
+      return wallClockDeadline;
+    }
     // CONFIRM-FIRST: in 'preview' mode the SDK captures writes as proposals in
     // `proposedActions` and does NOT touch the DB. 'commit' (no production
     // caller) is the legacy direct-write path.
@@ -630,6 +667,8 @@ async function run(...args) {
       deadline: wallClockDeadline,
       dryRun: mode === 'preview',
       proposedActions,
+      userId,
+      extendDeadline: extendWallClockForAiCall,
     });
 
     // Each async SDK function must return an ivm.ExternalCopy of its
@@ -651,7 +690,7 @@ async function run(...args) {
         return new ivm.ExternalCopy(safe).copyInto({ release: true });
       });
     }
-    for (const name of SDK_METHODS) {
+    for (const name of [...SDK_METHODS, SDK_AI_METHOD]) {
       const fn = sdk[name];
       await jail.set(`__host_${name}`, new ivm.Reference((...args) => copyResult(fn(...args))));
     }
@@ -684,13 +723,23 @@ async function run(...args) {
     // wall-clock error. We flip `wallClockExpired` first so the catch{} below
     // classifies the outcome as a timeout regardless of which rejection wins.
     let wallClockTimer = null;
-    const remainingMs = Math.max(0, wallClockDeadline - Date.now());
     const wallClockGuard = new Promise((_, reject) => {
-      wallClockTimer = setTimeout(() => {
+      const fire = () => {
         wallClockExpired = true;
         disposeIsolateOnce();
-        reject(new PluginWallClockExceeded(HARD_WALL_CLOCK_MS));
-      }, remainingMs);
+        reject(new PluginWallClockExceeded(Math.min(
+          HARD_WALL_CLOCK_MS + counters.ai_calls * AI_CALL_WALL_CLOCK_EXTENSION_MS,
+          MAX_TOTAL_WALL_CLOCK_MS
+        )));
+      };
+      const arm = () => {
+        if (wallClockTimer) clearTimeout(wallClockTimer);
+        wallClockTimer = setTimeout(fire, Math.max(0, wallClockDeadline - Date.now()));
+      };
+      // Publish the re-arm hook so extendWallClockForAiCall() (called by the
+      // SDK per upstream AI call) can push the timer out to the new deadline.
+      rearmWallClockGuard = arm;
+      arm();
     });
     try {
       const runPromise = userScript.run(context, { timeout: RUN_TIMEOUT_MS, promise: true });
@@ -734,6 +783,14 @@ async function run(...args) {
       // it propagates) or the message text (which always does).
       status = 'query_budget_exceeded';
       errorMessage = `Plugin exceeded the per-run DB query budget. Counter: ${counters.db_queries}.`;
+    } else if (code === 'PLUGIN_AI_BUDGET_EXCEEDED' || /per-run AI call budget/i.test(msg)) {
+      // Thrown by pluginSdk.chargeAiCall() on the 3rd crm.ai.complete call
+      // that would actually reach the Claude API. Recorded as a plain 'error'
+      // (no dedicated plugin_runs.status value — the CHECK constraint doesn't
+      // need widening for a 2-call budget) with a normalized, actionable
+      // message.
+      status = 'error';
+      errorMessage = `Plugin exceeded the per-run AI call budget of ${pluginSdk.MAX_AI_CALLS_PER_RUN} crm.ai.complete calls. Counter: ${counters.ai_calls || 0}. Batch your prompts into fewer calls.`;
     } else if (code === 'PLUGIN_TASK_BUDGET_EXCEEDED' || /per-run createTask budget/i.test(msg)) {
       // Thrown synchronously inside the isolate by pluginSdk.chargeTask().
       // Independent of the query budget — even if a plugin still has query
@@ -865,6 +922,7 @@ async function run(...args) {
       triggerSource,
       cpu_ms: elapsedMs,
       db_queries: counters.db_queries,
+      ai_calls: counters.ai_calls || 0,
       log_lines: logBuffer.length,
       error: errorMessage,
       run_mode: runModeUsed,
@@ -881,6 +939,9 @@ async function run(...args) {
     error: errorMessage,
     cpu_ms: elapsedMs,
     db_queries: counters.db_queries,
+    // Upstream Claude calls this run made through crm.ai.complete (each one
+    // metered as an org-attributed ai_usage_events row, endpoint='plugin-run').
+    ai_calls: counters.ai_calls || 0,
     mode,
     // The posture that governed this run: 'preview' | 'autonomous' | 'commit'
     // (null when the run was rejected before the plugin row loaded).
@@ -907,6 +968,8 @@ module.exports = {
     COMPILE_TIMEOUT_MS,
     RUN_TIMEOUT_MS,
     HARD_WALL_CLOCK_MS,
+    AI_CALL_WALL_CLOCK_EXTENSION_MS,
+    MAX_TOTAL_WALL_CLOCK_MS,
     MAX_CONCURRENT_RUNS_PER_ORG,
     concurrentRunsByOrg,
     isSandboxAvailable: () => Boolean(ivm),

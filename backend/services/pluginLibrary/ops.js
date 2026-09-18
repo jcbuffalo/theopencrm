@@ -54,7 +54,7 @@ module.exports = {
     category: 'ops',
     icon: '☕',
     summary:
-      'Every weekday morning, this looks at the tasks due today, pulls up the deals behind them — stage, amount, hot flag — and files one prep-brief task with a per-deal rundown plus a copilot prompt for a talking-points sheet. Walk into the day already knowing which conversations matter and what state each deal is in.',
+      'Every weekday morning, this looks at the tasks due today, pulls up the deals behind them — stage, amount, hot flag — and files one prep-brief task with a per-deal rundown. With AI enabled, the talking-points sheet is drafted right into the task (metered per-org); without it, the task carries a ready-to-run copilot prompt instead. Walk into the day already knowing which conversations matter.',
     tags: ['daily', 'preparation', 'ai'],
     spec: {
       name: 'daily-deal-prep-brief',
@@ -94,15 +94,26 @@ module.exports = {
       if (!d) continue;
       lines.push('- ' + (d.title || ('#' + d.id)) + ' [' + d.stage + ', $' + Math.round(Number(d.amount) || 0) + (d.hot_flag ? ', HOT' : '') + '] — today: ' + (taskByDeal[dealIds[j]] || ''));
     }
+    // Metered in-run AI: draft the prep sheet now. On { configured:false } or
+    // { blocked:true } fall back to embedding the copilot brief in the task.
+    var prepSheet = null;
+    var ai = await crm.ai.complete({
+      prompt: 'Build a prep sheet from this list of deals with tasks due today:\\n' + lines.join('\\n') +
+        '\\nFor each deal: one line of status and one suggested talking point for today. Plain text, no preamble.',
+      max_tokens: 600,
+    });
+    if (ai && ai.ok && ai.text) prepSheet = ai.text;
     await crm.createTask({
       title: 'Deal prep for ' + today + ' (' + lines.length + ' deal' + (lines.length === 1 ? '' : 's') + ')',
       description: 'Deals with work due today:\\n' + lines.join('\\n') + '\\n' +
-        'Copilot brief (paste into chat for a talking-points sheet): For each deal above, give one line of status and one suggested talking point for today.',
+        (prepSheet
+          ? 'AI prep sheet:\\n' + prepSheet
+          : 'Copilot brief (paste into chat for a talking-points sheet): For each deal above, give one line of status and one suggested talking point for today.'),
       due_date: today,
       priority: 'high',
     });
-    crm.log('Prep brief covers ' + lines.length + ' deal(s) from ' + dueToday.length + ' due task(s).');
-    return { deals: lines.length, tasks_due: dueToday.length };
+    crm.log('Prep brief covers ' + lines.length + ' deal(s) from ' + dueToday.length + ' due task(s). AI sheet: ' + (prepSheet ? 'yes' : 'no'));
+    return { deals: lines.length, tasks_due: dueToday.length, ai_drafted: !!prepSheet };
   },
 };`,
     },
@@ -113,7 +124,7 @@ module.exports = {
     category: 'ops',
     icon: '🌆',
     summary:
-      'Close the day with a record instead of a vague feeling. At 6pm on weekdays this gathers what actually moved — tasks completed today and deals touched today — into one wrap-up task, with a copilot prompt that condenses it into a three-bullet update ready for your team channel or tomorrow-morning self.',
+      'Close the day with a record instead of a vague feeling. At 6pm on weekdays this gathers what actually moved — tasks completed today and deals touched today — into one wrap-up task. With AI enabled it condenses the day into a three-bullet update right in the task (metered per-org); without it, the task carries the copilot prompt to do the same in chat.',
     tags: ['daily', 'digest', 'ai'],
     spec: {
       name: 'eod-wrapup-summary',
@@ -142,16 +153,27 @@ module.exports = {
     }
     var taskLines = completed.slice(0, 8).map(function (t) { return '- ' + (t.title || ('task #' + t.id)); });
     var dealLines = touched.slice(0, 8).map(function (d) { return '- ' + (d.title || ('#' + d.id)) + ' [' + d.stage + ']'; });
+    var activity = 'Tasks completed today (' + completed.length + '):\\n' + (taskLines.join('\\n') || '- none') + '\\n' +
+      'Deals touched today (' + touched.length + '):\\n' + (dealLines.join('\\n') || '- none');
+    // Metered in-run AI: condense the day into the three-bullet update now;
+    // fall back to the copilot brief when AI is unconfigured or blocked.
+    var update = null;
+    var ai = await crm.ai.complete({
+      prompt: 'Condense this end-of-day CRM activity into a three-bullet update for the team. Plain language, one line per bullet, no preamble.\\n' + activity,
+      max_tokens: 300,
+    });
+    if (ai && ai.ok && ai.text) update = ai.text;
     await crm.createTask({
       title: 'End-of-day wrap-up — ' + today,
-      description: 'Tasks completed today (' + completed.length + '):\\n' + (taskLines.join('\\n') || '- none') + '\\n' +
-        'Deals touched today (' + touched.length + '):\\n' + (dealLines.join('\\n') || '- none') + '\\n' +
-        'Copilot brief (paste into chat): Condense the activity above into a three-bullet end-of-day update for the team.',
+      description: activity + '\\n' +
+        (update
+          ? 'AI three-bullet update:\\n' + update
+          : 'Copilot brief (paste into chat): Condense the activity above into a three-bullet end-of-day update for the team.'),
       due_date: today,
       priority: 'low',
     });
-    crm.log('EOD wrap-up: ' + completed.length + ' tasks completed, ' + touched.length + ' deals touched.');
-    return { tasks_completed: completed.length, deals_touched: touched.length };
+    crm.log('EOD wrap-up: ' + completed.length + ' tasks completed, ' + touched.length + ' deals touched. AI update: ' + (update ? 'yes' : 'no'));
+    return { tasks_completed: completed.length, deals_touched: touched.length, ai_drafted: !!update };
   },
 };`,
     },
@@ -162,7 +184,7 @@ module.exports = {
     category: 'ops',
     icon: '🔍',
     summary:
-      'Every new company added to the CRM gets a research task with the five questions worth answering before the first call: company size and market, the likely decision-makers, current vendors or alternatives, recent news or buying triggers, and the sharpest opening offer. The extension runs entirely on your CRM data — the pack tells you (or the copilot in chat) exactly what to go find.',
+      'Every new company added to the CRM gets a research task with the five questions worth answering before the first call: company size and market, the likely decision-makers, current vendors or alternatives, recent news or buying triggers, and the sharpest opening offer. With AI enabled, the five questions are tailored to the specific company (metered per-org, drafted from your CRM data — it does not browse the web); without it, you get the proven standard five.',
     tags: ['research', 'new-business', 'ai'],
     spec: {
       name: 'new-company-research-pack',
@@ -191,21 +213,33 @@ module.exports = {
     if (industry) known.push('Industry on record: ' + industry);
     if (website) known.push('Website on record: ' + website);
     var due = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
+    // Metered in-run AI: tailor the five questions to this company. Falls
+    // back to the standard five when AI is unconfigured or blocked.
+    var questions =
+      '1. How big is ' + name + ' — headcount, revenue band, growth trajectory?\\n' +
+      '2. Who are the likely decision-makers and what do they care about?\\n' +
+      '3. What are they using today for what we sell (vendor, in-house, nothing)?\\n' +
+      '4. Any recent news, hires, or funding that create a buying trigger?\\n' +
+      '5. Given all that, what is our sharpest opening offer?';
+    var aiTailored = false;
+    var ai = await crm.ai.complete({
+      prompt: 'Draft five sharp research questions to answer before a first sales call with ' + name +
+        (industry ? ' (industry: ' + industry + ')' : '') + (website ? ' (website on record: ' + website + ')' : '') +
+        '. Focus on decision-makers, current alternatives, and buying triggers. Numbered list, one line each, no preamble.',
+      max_tokens: 350,
+    });
+    if (ai && ai.ok && ai.text) { questions = ai.text; aiTailored = true; }
     await crm.createTask({
       title: 'Research pack: ' + name,
       description: (known.length ? known.join('\\n') + '\\n' : '') +
         'Answer these five before the first call (ask the copilot in chat, or research directly):\\n' +
-        '1. How big is ' + name + ' — headcount, revenue band, growth trajectory?\\n' +
-        '2. Who are the likely decision-makers and what do they care about?\\n' +
-        '3. What are they using today for what we sell (vendor, in-house, nothing)?\\n' +
-        '4. Any recent news, hires, or funding that create a buying trigger?\\n' +
-        '5. Given all that, what is our sharpest opening offer?\\n' +
+        questions + '\\n' +
         'Log the answers on the company record when done.',
       due_date: due,
       priority: 'medium',
     });
-    crm.log('Research pack filed for ' + name);
-    return { task_created: true, company: name };
+    crm.log('Research pack filed for ' + name + (aiTailored ? ' (AI-tailored questions)' : ''));
+    return { task_created: true, company: name, ai_drafted: aiTailored };
   },
 };`,
     },

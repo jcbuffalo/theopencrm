@@ -49,7 +49,7 @@ module.exports = [
     category: 'reporting',
     icon: '🌅',
     summary:
-      'Start the week knowing exactly where the pipeline stands. Every Monday morning this computes your open pipeline by stage, the probability-weighted total, deals expected to close in the next 14 days, and your three biggest open deals — then files it as a single brief task, complete with a copilot prompt that turns the numbers into a team-ready narrative in one click.',
+      'Start the week knowing exactly where the pipeline stands. Every Monday morning this computes your open pipeline by stage, the probability-weighted total, deals expected to close in the next 14 days, and your three biggest open deals — then files it as a single brief task. With AI enabled, the team-ready narrative is written right into the task (metered per-org); without it, the task carries a copilot prompt that does the same in chat.',
     tags: ['digest', 'pipeline', 'ai'],
     spec: {
       name: 'monday-pipeline-brief',
@@ -103,18 +103,32 @@ module.exports = {
     var today = new Date().toISOString().slice(0, 10);
     var stats = 'Open deals: ' + deals.length + '. Total: $' + Math.round(total) + '. Weighted: $' + Math.round(weighted) +
       '. Closing in 14 days: ' + soon.length + '.';
+    // Metered in-run AI: write the team-ready narrative now; fall back to
+    // embedding the copilot prompt when AI is unconfigured or blocked.
+    var narrative = null;
+    var ai = await crm.ai.complete({
+      prompt: 'Turn these pipeline numbers into a five-sentence Monday briefing for the sales team. ' +
+        'Lead with the weighted total, call out what closes this fortnight, and end with the single most important focus. No preamble.\\n' +
+        'Numbers: ' + stats + '\\nBy stage:\\n' + (stageLines.join('\\n') || '- (empty pipeline)') +
+        '\\nClosing in 14 days:\\n' + (soonLines.join('\\n') || '- none') +
+        '\\nBiggest open deals:\\n' + (top.join('\\n') || '- none'),
+      max_tokens: 400,
+    });
+    if (ai && ai.ok && ai.text) narrative = ai.text;
     await crm.createTask({
       title: 'Monday pipeline brief — ' + today,
       description: stats + '\\n' +
         'By stage:\\n' + (stageLines.join('\\n') || '- (empty pipeline)') + '\\n' +
         'Expected to close in the next 14 days:\\n' + (soonLines.join('\\n') || '- none') + '\\n' +
         'Biggest open deals:\\n' + (top.join('\\n') || '- none') + '\\n' +
-        'Copilot brief (paste into chat for a team-ready narrative): Turn these pipeline numbers into a five-sentence Monday briefing. ' + stats,
+        (narrative
+          ? 'AI briefing:\\n' + narrative
+          : 'Copilot brief (paste into chat for a team-ready narrative): Turn these pipeline numbers into a five-sentence Monday briefing. ' + stats),
       due_date: today,
       priority: 'medium',
     });
-    crm.log(stats);
-    return { open: deals.length, total: Math.round(total), weighted: Math.round(weighted), closing_14d: soon.length };
+    crm.log(stats + ' AI briefing: ' + (narrative ? 'yes' : 'no'));
+    return { open: deals.length, total: Math.round(total), weighted: Math.round(weighted), closing_14d: soon.length, ai_drafted: !!narrative };
   },
 };`,
     },
@@ -178,7 +192,7 @@ module.exports = {
     category: 'reporting',
     icon: '🏆',
     summary:
-      'On the first of each month, this tallies last month\'s closed-won deals — count, total value, and the top five wins — into a recap task, with a copilot brief that turns it into a celebratory summary you can drop straight into your team channel or investor update. Months with zero wins log quietly instead of creating an empty recap.',
+      'On the first of each month, this tallies last month\'s closed-won deals — count, total value, and the top five wins — into a recap task. With AI enabled, the celebratory summary is written right into the task, ready to drop into your team channel or investor update (metered per-org); without it, the task carries the copilot brief to draft it in chat. Months with zero wins log quietly instead of creating an empty recap.',
     tags: ['digest', 'wins', 'ai'],
     spec: {
       name: 'month-end-win-recap',
@@ -220,15 +234,27 @@ module.exports = {
     var monthName = new Date(monthStart).toISOString().slice(0, 7);
     var stats = wins.length + ' deal(s) closed won in ' + monthName + ' for $' + Math.round(total) + ' total.';
     var today = new Date().toISOString().slice(0, 10);
+    // Metered in-run AI: write the shareable recap now; fall back to the
+    // copilot prompt when AI is unconfigured or blocked.
+    var recap = null;
+    var ai = await crm.ai.complete({
+      prompt: 'Write a short, upbeat monthly wins recap for the team from these numbers. ' +
+        'Three sentences, name the biggest win, end with momentum for next month. No preamble.\\n' +
+        stats + '\\nTop wins:\\n' + top.join('\\n'),
+      max_tokens: 300,
+    });
+    if (ai && ai.ok && ai.text) recap = ai.text;
     await crm.createTask({
       title: 'Closed-won recap — ' + monthName,
       description: stats + '\\nTop wins:\\n' + top.join('\\n') + '\\n' +
-        'Copilot brief (paste into chat for a shareable recap): Write a short, upbeat monthly wins recap from these numbers. ' + stats,
+        (recap
+          ? 'AI recap (ready to share):\\n' + recap
+          : 'Copilot brief (paste into chat for a shareable recap): Write a short, upbeat monthly wins recap from these numbers. ' + stats),
       due_date: today,
       priority: 'low',
     });
-    crm.log(stats);
-    return { wins: wins.length, total: Math.round(total) };
+    crm.log(stats + ' AI recap: ' + (recap ? 'yes' : 'no'));
+    return { wins: wins.length, total: Math.round(total), ai_drafted: !!recap };
   },
 };`,
     },
