@@ -50,25 +50,28 @@ All functions are async and **must be `await`-ed**. Every function is closed ove
 
 Each read counts **1** against the per-run query budget.
 
-#### `crm.getDeal(id)` / `crm.getContact(id)` / `crm.getCompany(id)` / `crm.getTask(id)`
+#### `crm.getDeal(id)` / `crm.getContact(id)` / `crm.getCompany(id)` / `crm.getTask(id)` / `crm.getLead(id)` / `crm.getCase(id)` / `crm.getQuote(id)` / `crm.getMeeting(id)`
 
 ```js
 const deal = await crm.getDeal(42);
 // → { id, title, stage, phase, amount, probability, ... } or null
 ```
 
-**Args:** `id` (positive integer). Coerced via `Number(id)`; non-integers throw `id must be a positive integer` (`pluginSdk.js:202-208`).
-**Returns:** the row (subset of columns from the read allowlist), or `null` if not found in the caller's org.
+**Args:** `id` (positive integer). Coerced via `Number(id)`; non-integers throw `id must be a positive integer` (`pluginSdk.js` `assertId`).
+**Returns:** the row (subset of columns from the read allowlist), or `null` if not found in the caller's org — **or if the record's module is disabled for the org** (see "Module availability" below).
 **Errors:** invalid id, query budget exceeded.
 
-#### `crm.listDeals(filter)` / `crm.listContacts(filter)` / `crm.listCompanies(filter)` / `crm.listTasks(filter)`
+There is deliberately no `crm.getServiceContract` — renewal automations operate on cohorts (`renewal_stage` / `customer_id`); use `crm.listServiceContracts`.
+
+#### `crm.listDeals(filter)` / `crm.listContacts(filter)` / `crm.listCompanies(filter)` / `crm.listTasks(filter)` / `crm.listLeads(filter)` / `crm.listCases(filter)` / `crm.listQuotes(filter)` / `crm.listMeetings(filter)` / `crm.listServiceContracts(filter)`
 
 ```js
 const stale = await crm.listDeals({ stage: 'NEGOTIATION', owner_id: 7 });
 // → array of rows, max 500 (MAX_ROWS), ordered by id DESC
+const upcoming = await crm.listMeetings({ deal_id: 42, after: '2026-09-01', before: '2026-09-30' });
 ```
 
-**Args:** `filter` (plain object). Unknown keys are silently dropped; only primitives/null are accepted as values. Allowed filter keys per table:
+**Args:** `filter` (plain object). Unknown keys are silently dropped; only primitives/null are accepted as values. Filter keys are **real column names** — note leads/cases/service-contracts use `owner_user_id`-style names where their tables do. Allowed filter keys per table:
 
 | Table | Allowed filter keys |
 |---|---|
@@ -76,10 +79,17 @@ const stale = await crm.listDeals({ stage: 'NEGOTIATION', owner_id: 7 });
 | `contacts` | `status`, `company_id`, `owner_id` |
 | `companies` | `type`, `status`, `owner_id` |
 | `tasks` | `status`, `contact_id`, `deal_id`, `priority`, `assigned_to` |
+| `leads` | `status`, `source`, `owner_user_id` |
+| `cases` | `status`, `priority`, `company_id` |
+| `quotes` | `status`, `deal_id`, `customer_id` |
+| `meetings` | `deal_id`, `company_id` — plus the `after` / `before` range keys below |
+| `service_contracts` | `renewal_stage`, `status`, `customer_id` |
 
-Source: `FILTER_ALLOWLISTS` at `pluginSdk.js:90-95`.
+Source: `FILTER_ALLOWLISTS` in `pluginSdk.js`.
 
-**Columns returned** (the read allowlists, `pluginSdk.js:108-127` — the SDK never does `SELECT *`):
+**Date ranges (`crm.listMeetings` only):** `after` and `before` are *virtual* filter keys that become `starts_at >= $n` / `starts_at <= $n`. Values must be strings `Date.parse` accepts (e.g. `'2026-09-01'`, `'2026-09-30T23:59:59Z'`); anything else is silently dropped, same as an unknown filter key. Source: `RANGE_FILTER_ALLOWLISTS` in `pluginSdk.js` — meetings is the only table with a clean single timestamp axis today.
+
+**Columns returned** (the read allowlists in `pluginSdk.js` — the SDK never does `SELECT *`):
 
 | Table | Returned columns |
 |---|---|
@@ -87,17 +97,38 @@ Source: `FILTER_ALLOWLISTS` at `pluginSdk.js:90-95`.
 | `contacts` | `id, first_name, last_name, email, phone, job_title, company_id, owner_id, status, created_at, updated_at` |
 | `companies` | `id, name, industry, website, type, status, owner_id, created_at, updated_at` |
 | `tasks` | `id, title, description, status, priority, due_date, assigned_to, contact_id, deal_id, created_at, updated_at` |
+| `leads` | `id, name, email, phone, company_name, title, source, status, score, owner_user_id, converted_contact_id, converted_deal_id, created_at, updated_at` |
+| `cases` | `id, subject, description, status, priority, company_id, contact_id, owner_user_id, sla_due_at, resolved_at, created_at, updated_at` |
+| `quotes` | `id, title, status, total_amount, valid_until, current_revision, deal_id, customer_id, created_at, updated_at` |
+| `meetings` | `id, title, starts_at, ends_at, company_id, deal_id, contact_id, location, created_at, updated_at` |
+| `service_contracts` | `id, name, contract_type, status, start_date, end_date, renewal_notice_days, monthly_amount, annual_value, renewal_stage, churn_reason, renewed_contract_id, customer_id, deal_id, created_at, updated_at` |
 
-**Returns:** array (possibly empty). Max length 500.
+Deliberate exclusions (never widen casually): free-text `notes` columns everywhere except tasks/cases description (deal notes, lead notes, meeting notes and quote notes are the PII-dense columns); `quotes.public_id` and the `quotes.portal_response*` columns (external-share / customer-portal surface); `external_event_id` on meetings (internal Google-sync linkage); `created_by` / `updated_by` / `entity_version` / `user_id` (audit + tenancy internals).
+
+**Returns:** array (possibly empty). Max length 500. A list against a **disabled module** returns `[]` — see "Module availability" below.
 **Errors:** query budget exceeded.
+
+### Module availability (feature flags)
+
+The module objects are gated per org, mirroring the `/api` mounts (`TABLE_FEATURE_FLAGS` in `pluginSdk.js`):
+
+| Tables | Org flag |
+|---|---|
+| `leads` | `leads_enabled` |
+| `cases`, `service_contracts` | `customer_success_enabled` |
+| `quotes` | `quotes_enabled` (the Zang customer-quote workflow — default ON only for `zang` orgs) |
+| `meetings`, `deals`, `contacts`, `companies`, `tasks` | none — core, always available |
+
+**Behavior when the flag is OFF for the org:** the call **degrades, never errors** — `list*` returns `[]`, `get*` returns `null`, `update*` returns `null` (and records no proposal in preview mode) — and the SDK appends one run-log warning per skipped call, e.g. `crm: the leads module ('leads_enabled') is disabled for this workspace — returning an empty result.` A flag-off call charges **0** query budget (no query is issued; the flag lookup itself is served from the feature-flag service's 30-second per-org cache). This is what lets one library entry ship to every org: workspaces without the module simply see the entry no-op over empty lists. Note the SDK is deliberately *stricter* than the raw mounts in one spot: base `service_contracts` CRUD is ungated at `/api`, but the renewal fields the SDK exposes are the `customer_success_enabled` surface, so the SDK fails closed on that flag.
 
 ### Writes
 
-#### `crm.updateDeal(id, patch)` / `crm.updateContact(id, patch)` / `crm.updateCompany(id, patch)` / `crm.updateTask(id, patch)`
+#### `crm.updateDeal(id, patch)` / `crm.updateContact(id, patch)` / `crm.updateCompany(id, patch)` / `crm.updateTask(id, patch)` / `crm.updateLead(id, patch)` / `crm.updateCase(id, patch)`
 
 ```js
 await crm.updateDeal(42, { stage: 'CLOSED_WON', amount: 50000 });
 // → updated row or null if not found in the caller's org
+await crm.updateCase(8, { status: 'pending', sla_due_at: '2026-10-01T00:00:00Z' });
 ```
 
 **Args:** `id` (positive integer), `patch` (plain object — not array). Unknown keys are silently dropped. Allowed patch keys per table:
@@ -108,12 +139,16 @@ await crm.updateDeal(42, { stage: 'CLOSED_WON', amount: 50000 });
 | `contacts` | `owner_id`, `company_id`, `status` |
 | `companies` | `owner_id`, `type`, `status` |
 | `tasks` | `assigned_to`, `status`, `due_date`, `priority` |
+| `leads` | `status`, `owner_user_id`, `notes` |
+| `cases` | `status`, `priority`, `sla_due_at` |
 
-Source: `UPDATE_ALLOWLISTS` at `pluginSdk.js:80-85`. The list mirrors `routes/_bulkOps.js` — the plugin attack surface and the bulk-operations attack surface are identical by design.
+Source: `UPDATE_ALLOWLISTS` in `pluginSdk.js`. The core-table lists mirror `routes/_bulkOps.js` — the plugin attack surface and the bulk-operations attack surface are identical by design; leads/cases follow the same working-the-record posture. Quotes, meetings, and service contracts are **read-only** in the SDK — their entities are absent from `TABLE_BY_ENTITY`, so even a tampered stored proposal naming them is rejected at apply time.
 
-`updated_at` is set to `CURRENT_TIMESTAMP` automatically (`pluginSdk.js:307-308`).
+`updated_at` is set to `CURRENT_TIMESTAMP` automatically.
 
-**Returns:** the full row after update, or `null` if the id was not found in the caller's org.
+Like every other write, `updateLead`/`updateCase` go through the confirm-first proposal machinery in preview/triggered runs (the write becomes a proposal card; `services/pluginActions.js` re-validates against these same allowlists on Apply). A flag-off module (leads/cases behind `leads_enabled`/`customer_success_enabled`) makes the update return `null` with a run-log warning and no proposal — see "Module availability".
+
+**Returns:** the full row after update, or `null` if the id was not found in the caller's org (or the module is disabled).
 **Errors:** `patch must be a plain object`, `No allowed fields in patch. Allowed for <table>: …` (when every key is dropped), invalid id, query budget exceeded.
 **Query budget cost:** 1.
 
@@ -136,7 +171,9 @@ await crm.createTask({
 **Errors:** `createTask: data must be an object`, `createTask: title is required`, invalid `contact_id`/`deal_id`, task budget exceeded, query budget exceeded.
 **Budget cost:** 1 against the task budget AND 1 against the query budget. `chargeTask` runs first; if it throws, the query counter is not incremented (`pluginSdk.js:349-354`).
 
-**Note: no creation surface for deals, contacts, or companies.** Only `createTask` exists in v1. This is deliberate — see the comment above `createTask` in `pluginSdk.js`.
+**Note: no creation surface for deals, contacts, companies, leads, cases, quotes, meetings, or service contracts.** Only `createTask` exists. This is deliberate — see the comment above `createTask` in `pluginSdk.js`.
+
+**Note: no `crm.createNote`.** The platform's comment surface (`record_comments`, migration 146) requires a NOT-NULL human `author_user_id` — its whole design (author name/email shown in the thread, author-only edit rights, @mention fan-out) assumes a person wrote the comment. An unattended autonomous apply has no author to bind, and binding the human who clicked Apply would misattribute plugin output as their words. Until a system-author convention exists there, annotate records via `crm.createTask` (plugin-owned, `user_id` NULL by design) or the writable `notes` fields (`updateDeal` / `updateLead`).
 
 ### AI
 
@@ -376,6 +413,33 @@ module.exports = {
 };
 ```
 
+### 5. At-risk renewal digest (module objects + flag degradation)
+
+```js
+// Daily: collect at-risk renewals and urgent open cases into one review task.
+// In an org with customer_success_enabled OFF, both lists come back [] (with
+// a run-log warning) and the plugin cleanly reports nothing to do.
+module.exports = {
+  async run({ crm }) {
+    const atRisk = await crm.listServiceContracts({ renewal_stage: 'at_risk' });
+    const urgent = await crm.listCases({ status: 'open', priority: 'urgent' });
+    if (atRisk.length === 0 && urgent.length === 0) {
+      return { skipped: true, reason: 'nothing_at_risk_or_module_disabled' };
+    }
+    const lines = [
+      ...atRisk.slice(0, 20).map(c => `Renewal at risk: "${c.name}" ends ${c.end_date} ($${c.annual_value || c.monthly_amount || '?'})`),
+      ...urgent.slice(0, 20).map(c => `Urgent case #${c.id}: ${c.subject}`),
+    ];
+    await crm.createTask({
+      title: `Renewal & escalation review — ${atRisk.length} at-risk, ${urgent.length} urgent`,
+      description: lines.join('\n'),
+      priority: 'high',
+    });
+    return { at_risk: atRisk.length, urgent_cases: urgent.length };
+  },
+};
+```
+
 ---
 
 ## Declarative `spec_json.actions` are metadata, not an execution plan
@@ -473,8 +537,10 @@ Active plugins auto-run when their `trigger_event` fires:
 |---|---|---|
 | `deal.created` | a deal is created | id, title, stage, deal_type, amount |
 | `deal.stage_changed` | a deal enters a new stage (PATCH/PUT/AI apply) | id, title, stage, prev_stage, deal_type, amount |
+| `deal.updated` | a deal PUT changed a watched field OTHER than stage-only (watched: owner_id, amount, expected_close_date, stage; a stage-only edit fires `deal.stage_changed` instead — never both for one edit) | id, title, stage, deal_type, amount, owner_id, expected_close_date, `changed: [names]`, `prev: {name: oldValue}` |
 | `contact.created` / `company.created` / `lead.created` / `case.created` | record creation (leads: manual + public form) | record core fields |
 | `task.overdue` | the overdue worker finds a newly-overdue task (once per task per day) | task id, title, due_date, assigned_to |
+| `task.completed` | a task PUT transitions status into `done` (at most once per task per UTC day — a later-day re-complete re-fires; bulk PATCH doesn't emit) | task id, title, deal_id, contact_id, assigned_to, completed_by |
 | `quote.sent` | a quote transitions to (or is created as) `sent` | quote id, public_id, deal_id |
 | `schedule.hourly` / `schedule.daily` | the schedule worker's leased tick (daily = once per UTC day) | `{ trigger: { event, date } }` |
 
@@ -492,4 +558,4 @@ is audited with `autonomous: true`;
 after 5 consecutive execution failures the plugin auto-pauses
 (`status='errored'`) and org admins are notified. `last_triggered_at` is
 stamped on every attempt. Authoring-accepted events without a dispatch site
-yet: `deal.updated`, `invoice.paid`, `task.completed`, `schedule.weekly`.
+yet: `invoice.paid`, `schedule.weekly`.

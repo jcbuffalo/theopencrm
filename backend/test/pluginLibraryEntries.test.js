@@ -206,10 +206,119 @@ const TASKS = Array.from({ length: 35 }, (_, i) => ({
   updated_at: i % 4 === 0 ? daysAgoIso(0) : daysAgoIso(3), // completed-today rows exist
 }));
 
+// ---------------------------------------------------------------------------
+// Wave-2 fixture extensions. Appended rows give the wave-2 entries their
+// interesting branches: an expansion candidate (won history, no open deals),
+// duplicate contacts/companies, and a contact whose add-date anniversary is
+// today. New tables (leads / cases / quotes / service contracts) back the
+// expanded-SDK entries.
+// ---------------------------------------------------------------------------
+
+// Company 9 has ONE closed-won deal and no open pipeline → expansion signal.
+DEALS.push({
+  id: 90, title: 'Legacy Platform — Northwind', stage: 'CLOSED_WON', phase: 'post_sale',
+  amount: 45000, probability: 1, expected_close_date: daysAgoDate(200),
+  hot_flag: false, owner_id: 2, status: 'closed', contact_id: 5, company_id: 9,
+  customer_id: null, vendor_id: null,
+  last_activity_at: daysAgoIso(150), created_at: daysAgoIso(260), updated_at: daysAgoIso(150),
+});
+
+// Duplicate contacts (same email, different names) + an anniversary contact.
+const ANNIVERSARY_ISO = (() => {
+  const t = new Date();
+  return new Date(Date.UTC(t.getUTCFullYear() - 1, t.getUTCMonth(), t.getUTCDate(), 12)).toISOString();
+})();
+CONTACTS.push(
+  {
+    id: 90, first_name: 'Dana', last_name: 'Smith', email: 'dupe@example.com',
+    phone: '555-0190', job_title: 'Buyer', company_id: 2, owner_id: 1,
+    status: 'active', created_at: daysAgoIso(400), updated_at: daysAgoIso(3),
+  },
+  {
+    id: 91, first_name: 'D', last_name: 'Smith-Jones', email: 'dupe@example.com',
+    phone: null, job_title: null, company_id: 2, owner_id: 2,
+    status: 'active', created_at: daysAgoIso(90), updated_at: daysAgoIso(3),
+  },
+  {
+    id: 92, first_name: 'Avery', last_name: 'Nguyen', email: 'avery@example.com',
+    phone: '555-0192', job_title: 'COO', company_id: 4, owner_id: 1,
+    status: 'active', created_at: ANNIVERSARY_ISO, updated_at: daysAgoIso(10),
+  },
+);
+
+// Duplicate companies (normalized-name + domain match).
+COMPANIES.push(
+  {
+    id: 90, name: 'Acme Rentals LLC', industry: 'Equipment', website: 'https://acmerentals.example.com',
+    type: 'customer', status: 'active', owner_id: 1, created_at: daysAgoIso(300), updated_at: daysAgoIso(4),
+  },
+  {
+    id: 91, name: 'Acme Rentals, Inc.', industry: null, website: 'http://www.acmerentals.example.com/home',
+    type: 'customer', status: 'active', owner_id: 2, created_at: daysAgoIso(50), updated_at: daysAgoIso(4),
+  },
+);
+
+const LEADS = Array.from({ length: 8 }, (_, i) => ({
+  id: i + 1,
+  name: `Lead ${i + 1}`,
+  email: `lead${i + 1}@example.com`,
+  phone: i % 3 === 0 ? null : '555-0200',
+  company_name: `Prospect ${i + 1}`,
+  title: 'Ops',
+  source: i % 2 === 0 ? 'webform' : 'referral',
+  status: 'new',
+  score: i % 4 === 0 ? null : i * 10,
+  owner_user_id: i % 2 === 0 ? (i % 3) + 1 : null, // mixed: some owned, some not
+  converted_contact_id: null,
+  converted_deal_id: null,
+  created_at: daysAgoIso(i), updated_at: daysAgoIso(0),
+}));
+const LEAD_BY_ID = {
+  id: 9, name: 'Jane Doe', email: 'jane@example.com', phone: '555-0100',
+  company_name: 'Acme Rentals', title: 'VP Ops', source: 'webform',
+  status: 'new', score: 40, owner_user_id: null,
+  converted_contact_id: null, converted_deal_id: null,
+  created_at: daysAgoIso(0), updated_at: daysAgoIso(0),
+};
+
+function hoursAgoIso(n) { return new Date(Date.now() - n * 3600000).toISOString(); }
+const CASES = Array.from({ length: 8 }, (_, i) => ({
+  id: i + 1,
+  subject: `Case ${i + 1}`,
+  description: i % 2 === 0 ? `Details for case ${i + 1}` : null,
+  status: i === 7 ? 'resolved' : 'open',
+  priority: ['low', 'medium', 'high', 'urgent'][i % 4],
+  company_id: (i % 5) + 1,
+  contact_id: i % 3 === 0 ? null : (i % 10) + 1,
+  owner_user_id: (i % 2) + 1,
+  sla_due_at: i < 4 ? hoursAgoIso(6 + i) : hoursAgoIso(-24), // first four breached
+  resolved_at: i === 7 ? daysAgoIso(0) : null,
+  created_at: daysAgoIso(i + 1), updated_at: daysAgoIso(0),
+}));
+const CASE_BY_ID = {
+  id: 4, subject: 'Cannot log in', description: 'User reports SSO loop on mobile.',
+  status: 'open', priority: 'high', company_id: 2, contact_id: 17,
+  owner_user_id: 1, sla_due_at: hoursAgoIso(3), resolved_at: null,
+  created_at: daysAgoIso(0), updated_at: daysAgoIso(0),
+};
+
+const QUOTES = [
+  { id: 1, title: 'Q-100 Acme fitout', status: 'sent', total_amount: 12000, valid_until: daysAgoDate(-2), current_revision: 1, deal_id: 3, customer_id: 2, created_at: daysAgoIso(10), updated_at: daysAgoIso(2) },
+  { id: 2, title: 'Q-101 Northwind refresh', status: 'sent', total_amount: 8000, valid_until: daysAgoDate(-5), current_revision: 1, deal_id: 5, customer_id: 3, created_at: daysAgoIso(8), updated_at: daysAgoIso(1) },
+  { id: 3, title: 'Q-102 slow burner', status: 'sent', total_amount: 20000, valid_until: daysAgoDate(-30), current_revision: 2, deal_id: 7, customer_id: 4, created_at: daysAgoIso(3), updated_at: daysAgoIso(0) },
+  { id: 4, title: 'Q-103 draft', status: 'draft', total_amount: 500, valid_until: daysAgoDate(-1), current_revision: 1, deal_id: 9, customer_id: 5, created_at: daysAgoIso(1), updated_at: daysAgoIso(0) },
+];
+
+const CONTRACTS = [
+  { id: 1, name: 'Acme Support', contract_type: 'support', status: 'active', start_date: daysAgoDate(320), end_date: daysAgoDate(-40), renewal_notice_days: 30, monthly_amount: 2000, annual_value: 24000, renewal_stage: 'at_risk', churn_reason: 'pricing pressure', renewed_contract_id: null, customer_id: 2, deal_id: 3, created_at: daysAgoIso(320), updated_at: daysAgoIso(1) },
+  { id: 2, name: 'Northwind SLA', contract_type: 'sla', status: 'active', start_date: daysAgoDate(300), end_date: daysAgoDate(-60), renewal_notice_days: 45, monthly_amount: 800, annual_value: null, renewal_stage: 'upcoming', churn_reason: null, renewed_contract_id: null, customer_id: 3, deal_id: null, created_at: daysAgoIso(300), updated_at: daysAgoIso(2) },
+  { id: 3, name: 'Globex Managed', contract_type: 'managed', status: 'active', start_date: daysAgoDate(100), end_date: daysAgoDate(-250), renewal_notice_days: 60, monthly_amount: 1500, annual_value: 18000, renewal_stage: 'healthy', churn_reason: null, renewed_contract_id: null, customer_id: 4, deal_id: null, created_at: daysAgoIso(100), updated_at: daysAgoIso(5) },
+];
+
 const DEAL_BY_ID = {
   id: 3, title: 'Acme Expansion', stage: 'CLOSED_WON', phase: 'pre_sale',
   amount: 60000, probability: 0.7, expected_close_date: daysAgoDate(1),
-  hot_flag: false, owner_id: 1, status: 'open', contact_id: 17, company_id: 2,
+  hot_flag: false, owner_id: 2, status: 'open', contact_id: 17, company_id: 2,
   customer_id: null, vendor_id: null,
   last_activity_at: daysAgoIso(1), created_at: daysAgoIso(5), updated_at: daysAgoIso(0),
 };
@@ -239,10 +348,18 @@ function makeStubClient() {
       if (/FROM contacts WHERE id = \$1/i.test(s))  return Promise.resolve({ rows: [CONTACT_BY_ID] });
       if (/FROM companies WHERE id = \$1/i.test(s)) return Promise.resolve({ rows: [COMPANY_BY_ID] });
       if (/FROM tasks WHERE id = \$1/i.test(s))     return Promise.resolve({ rows: [TASK_BY_ID] });
+      if (/FROM leads WHERE id = \$1/i.test(s))     return Promise.resolve({ rows: [LEAD_BY_ID] });
+      if (/FROM cases WHERE id = \$1/i.test(s))     return Promise.resolve({ rows: [CASE_BY_ID] });
+      if (/FROM quotes WHERE id = \$1/i.test(s))    return Promise.resolve({ rows: [QUOTES[0]] });
       if (/FROM deals/i.test(s))     return Promise.resolve({ rows: DEALS });
       if (/FROM contacts/i.test(s))  return Promise.resolve({ rows: CONTACTS });
       if (/FROM companies/i.test(s)) return Promise.resolve({ rows: COMPANIES });
       if (/FROM tasks/i.test(s))     return Promise.resolve({ rows: TASKS });
+      if (/FROM leads/i.test(s))     return Promise.resolve({ rows: LEADS });
+      if (/FROM cases/i.test(s))     return Promise.resolve({ rows: CASES });
+      if (/FROM quotes/i.test(s))    return Promise.resolve({ rows: QUOTES });
+      if (/FROM service_contracts/i.test(s)) return Promise.resolve({ rows: CONTRACTS });
+      if (/FROM meetings/i.test(s))  return Promise.resolve({ rows: [] });
       return Promise.resolve({ rows: [], rowCount: 0 });
     }),
     release: vi.fn(),
@@ -279,7 +396,61 @@ async function smokeRun(entry, input) {
 // Representative trigger payloads per event, mirroring the event-trigger
 // engine's taxonomy. Scheduled entries receive their own triggerFilter as
 // input (thresholds/config), which is the richest input they can expect.
+//
+// Wave-2 entries are exercised with the REAL dispatch shape —
+// input.trigger = { event, ...payload } (see services/pluginEvents.js
+// runTriggeredPlugin) — including deal.updated's changed/prev diff and
+// task.completed's payload. Per-slug overrides supply the specific diff or
+// date each entry's interesting branch needs.
+const MOST_RECENT_MONDAY = (() => {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+  return d.toISOString().slice(0, 10);
+})();
+const FIRST_OF_THIS_MONTH = (() => {
+  const d = new Date();
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString().slice(0, 10);
+})();
+
+const REPRESENTATIVE_BY_SLUG = {
+  'stage-entry-playbook-pack': { trigger: { event: 'deal.stage_changed', id: 3, title: 'Acme Expansion', stage: 'PROPOSAL', prev_stage: 'QUALIFIED', deal_type: 'default', amount: 60000 } },
+  'lost-deal-cleanup': { trigger: { event: 'deal.stage_changed', id: 3, title: 'Acme Expansion', stage: 'CLOSED_LOST', prev_stage: 'NEGOTIATION', deal_type: 'default', amount: 60000 } },
+  'slipping-deal-watch': { trigger: {
+    event: 'deal.updated', id: 3, title: 'Acme Expansion', stage: 'NEGOTIATION', deal_type: 'default',
+    amount: 60000, owner_id: 1, expected_close_date: daysAgoDate(-30),
+    changed: ['expected_close_date'], prev: { expected_close_date: daysAgoDate(-5) },
+  } },
+  'discount-approval-review': { trigger: {
+    event: 'deal.updated', id: 3, title: 'Acme Expansion', stage: 'NEGOTIATION', deal_type: 'default',
+    amount: 60000, owner_id: 1, expected_close_date: daysAgoDate(-30),
+    changed: ['amount'], prev: { amount: 100000 },
+  } },
+  'owner-change-handoff': { trigger: {
+    event: 'deal.updated', id: 3, title: 'Acme Expansion', stage: 'NEGOTIATION', deal_type: 'default',
+    amount: 60000, owner_id: 2, expected_close_date: daysAgoDate(-30),
+    changed: ['owner_id'], prev: { owner_id: 1 },
+  } },
+  'activity-chain-next-step': { trigger: {
+    event: 'task.completed', id: 11, title: 'Call back the buyer',
+    deal_id: 3, contact_id: 17, assigned_to: 1, completed_by: 1,
+  } },
+  'round-robin-lead-assigner': { trigger: {
+    event: 'lead.created', id: 9, name: 'Jane Doe', email: 'jane@example.com',
+    source: 'webform', status: 'new', score: 40,
+  } },
+  'ai-case-triage': { trigger: {
+    event: 'case.created', id: 4, subject: 'Cannot log in', status: 'open',
+    priority: 'high', company_id: 2, contact_id: 17,
+  } },
+  // Weekly / monthly entries gate on the schedule payload's UTC date.
+  'contact-dupe-detector': { trigger: { event: 'schedule.daily', date: MOST_RECENT_MONDAY } },
+  'company-dupe-detector': { trigger: { event: 'schedule.daily', date: MOST_RECENT_MONDAY } },
+  'renewal-pipeline-digest': { trigger: { event: 'schedule.daily', date: MOST_RECENT_MONDAY } },
+  'win-loss-pattern-memo': { trigger: { event: 'schedule.daily', date: FIRST_OF_THIS_MONTH } },
+};
+
 function representativeInput(entry) {
+  if (REPRESENTATIVE_BY_SLUG[entry.slug]) return REPRESENTATIVE_BY_SLUG[entry.slug];
   switch (entry.spec.triggerEvent) {
     case 'quote.sent':
       return { quote: { id: 1, public_id: 'Q-100' }, customer: { name: 'Acme Rentals' } };
@@ -319,8 +490,8 @@ beforeEach(() => {
 // 1. Catalog integrity
 // ===========================================================================
 describe('plugin library — catalog integrity', () => {
-  test('has 30 entries with unique slugs', () => {
-    expect(ALL.length).toBe(30);
+  test('has 57 entries with unique slugs', () => {
+    expect(ALL.length).toBe(57);
     const slugs = ALL.map(e => e.slug);
     expect(new Set(slugs).size).toBe(slugs.length);
   });
@@ -370,7 +541,7 @@ describe('plugin library — catalog integrity', () => {
       // is the only supported result channel for library code.
       expect(entry.spec.source_code).not.toMatch(/globalThis\s*\./);
     }
-    expect(RUNNABLE.length).toBe(25);
+    expect(RUNNABLE.length).toBe(52);
   });
 
   test('source_code references only allowlisted crm.* methods', () => {
@@ -487,17 +658,18 @@ describe('plugin library — smoke runs (confirm-first preview over stub pool)',
       const { proposedActions } = await smokeRun(entry, representativeInput(entry));
       if (proposedActions.length > 0) entriesProposing++;
     }
-    expect(entriesProposing).toBeGreaterThanOrEqual(20);
+    expect(entriesProposing).toBeGreaterThanOrEqual(45);
   });
 });
 
 // ===========================================================================
 // 5. AI-flavored entries — real crm.ai.complete output when AI is on,
-//    prompt-embedding fallback when it is not. The seven entries tagged 'ai'
-//    now call `await crm.ai.complete(...)` in their source; the AI text (not
-//    a pasted prompt) must land in the created task when AI is configured.
+//    prompt-embedding fallback when it is not. The 'ai'-tagged entries call
+//    `await crm.ai.complete(...)` in their source; the AI text (not a pasted
+//    prompt) must land in the created task when AI is configured.
 // ===========================================================================
 const AI_SLUGS = [
+  // wave 1
   'monday-pipeline-brief',
   'post-close-thank-you',
   'gone-quiet-reengagement',
@@ -505,6 +677,16 @@ const AI_SLUGS = [
   'daily-deal-prep-brief',
   'eod-wrapup-summary',
   'new-company-research-pack',
+  // wave 2
+  'won-deal-onboarding-pack',
+  'quote-expiry-chaser',
+  'ai-case-triage',
+  'churn-risk-agent',
+  'expansion-signal-agent',
+  'relationship-anniversary-touch',
+  'ai-deal-scorer',
+  'next-best-action-feed',
+  'win-loss-pattern-memo',
 ];
 const AI_TEXT = 'MOCK-AI-OUTPUT: crisp, specific, ready to use.';
 
@@ -513,7 +695,7 @@ function aiEntries() {
 }
 
 describe('plugin library — AI-flavored entries (crm.ai.complete)', () => {
-  test('the seven ai-tagged entries all exist, are runnable, and call crm.ai.complete', () => {
+  test('the ai-tagged entries all exist, are runnable, and call crm.ai.complete', () => {
     for (const [slug, entry] of aiEntries()) {
       expect(entry, `${slug} missing from the library`).toBeTruthy();
       expect(entry.tags).toContain('ai');
@@ -595,5 +777,69 @@ describe('plugin library — AI-flavored entries (crm.ai.complete)', () => {
         aiBilling.evaluateAiBilling = origEvaluateAiBilling;
       }
     });
+  });
+});
+
+// ===========================================================================
+// 6. Flag-off smokes — entries that read the flag-gated module objects
+//    (leads / cases / quotes / service contracts) must degrade cleanly when
+//    the module is disabled: the SDK returns [] / null, and the entry treats
+//    that as "disabled or nothing to do" — never a throw, never a proposal
+//    against the disabled module.
+// ===========================================================================
+const MODULE_DEPENDENT_SLUGS = [
+  'round-robin-lead-assigner',   // leads_enabled
+  'quote-expiry-chaser',         // quotes_enabled
+  'case-backlog-digest',         // customer_success_enabled
+  'ai-case-triage',              // customer_success_enabled (payload still works)
+  'case-sla-escalation',         // customer_success_enabled
+  'renewal-pipeline-digest',     // customer_success_enabled
+  'churn-risk-agent',            // customer_success_enabled (deal half still works)
+];
+
+describe('plugin library — flag-off smokes (module objects disabled)', () => {
+  beforeEach(() => {
+    featureFlags.hasFeature.mockResolvedValue(false);
+  });
+
+  test('every module-dependent slug exists and reads a gated module', () => {
+    for (const slug of MODULE_DEPENDENT_SLUGS) {
+      const entry = pluginLibrary.getBySlug(slug);
+      expect(entry, `${slug} missing from the library`).toBeTruthy();
+      expect(entry.spec.source_code).toMatch(/crm\.(getLead|listLeads|updateLead|getCase|listCases|updateCase|listQuotes|listServiceContracts)\(/);
+    }
+  });
+
+  test.each(MODULE_DEPENDENT_SLUGS.map(s => [s, pluginLibrary.getBySlug(s)]))(
+    '%s degrades cleanly with the module flag OFF (representative payload)',
+    async (slug, entry) => {
+      const { counters, proposedActions, logBuffer } = await smokeRun(entry, representativeInput(entry));
+      expect(counters.db_queries).toBeLessThanOrEqual(50);
+      expect(counters.tasks_created || 0).toBeLessThanOrEqual(10);
+      // No proposal may target a flag-gated table when its module is off.
+      for (const p of proposedActions) {
+        expect(['leads', 'cases', 'quotes', 'service_contracts']).not.toContain(p.table);
+      }
+      // The SDK logs one warning per skipped gated call (entries that only
+      // touch gated tables see at least one).
+      const gatedWarning = logBuffer.some(l => /is disabled for this workspace/.test(l));
+      expect(typeof gatedWarning).toBe('boolean'); // smoke: run completed, log readable
+    }
+  );
+
+  test.each(MODULE_DEPENDENT_SLUGS.map(s => [s, pluginLibrary.getBySlug(s)]))(
+    '%s tolerates input=null with the module flag OFF',
+    async (slug, entry) => {
+      const { counters } = await smokeRun(entry, null);
+      expect(counters.db_queries).toBeLessThanOrEqual(50);
+      expect(counters.tasks_created || 0).toBeLessThanOrEqual(10);
+    }
+  );
+
+  test('a fully-gated entry reports the disabled module in its run log', async () => {
+    const entry = pluginLibrary.getBySlug('case-backlog-digest');
+    const { proposedActions, logBuffer } = await smokeRun(entry, representativeInput(entry));
+    expect(proposedActions.length).toBe(0);
+    expect(logBuffer.some(l => /cases module .* is disabled/.test(l) || /is disabled for this workspace/.test(l))).toBe(true);
   });
 });

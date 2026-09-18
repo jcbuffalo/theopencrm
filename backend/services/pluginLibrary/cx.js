@@ -8,14 +8,15 @@
 // for the authoring contract.
 //
 // Notes on honesty:
-//   • Cases are not readable through the plugin SDK, so the case entries work
-//     entirely from the case.created trigger payload and encode SLAs as task
+//   • The wave-1 case entries predate the SDK module objects and work
+//     entirely from the case.created trigger payload, encoding SLAs as task
 //     due dates (the overdue-task machinery then covers breach escalation).
-//   • AI entries never call AI from the sandbox (there is no network and no
-//     AI SDK surface). Instead they assemble a ready-to-run copilot brief into
-//     the created task, so they are fully useful without AI and one-click
-//     drafts with it. The declarative claude_complete actions describe the
-//     AI half for surfaces that execute specs.
+//     Wave-2 entries use the flag-gated listCases / listServiceContracts /
+//     updateCase surface — a disabled module returns []/null, so every entry
+//     treats empty as "disabled or nothing to do", never as an error.
+//   • AI entries call the metered, billing-gated crm.ai.complete (max 2
+//     upstream calls per run) and ALWAYS degrade to embedding the copilot
+//     brief in the task when AI is unconfigured or blocked — never a throw.
 
 module.exports = [
   // --------------------------------------------------------------------------
@@ -323,6 +324,527 @@ module.exports = {
     }
     crm.log('Quiet accounts: ' + quietIds.length + '; re-engagement tasks created: ' + created + '; AI drafts: ' + drafted);
     return { quiet_accounts: quietIds.length, tasks_created: created, ai_drafted: drafted };
+  },
+};`,
+    },
+  },
+
+  // --------------------------------------------------------------------------
+  // WAVE 2 (2026-09) — service ops + CS agents on the expanded SDK
+  // (listCases / updateCase / listServiceContracts). Every module read is
+  // flag-gated per org and returns [] when disabled — these entries treat
+  // empty as "disabled or nothing to do".
+  // --------------------------------------------------------------------------
+  {
+    slug: 'case-backlog-digest',
+    name: 'Case backlog digest',
+    category: 'cx',
+    icon: '📥',
+    summary:
+      'A support backlog you don\'t look at daily is a backlog that gets looked at by customers first. Every day this counts your open cases by priority, names the five oldest with their ages, and calls out how many have already blown past their SLA due time — one digest task, priority-weighted so an urgent backlog files an urgent digest. Quiet queues (or workspaces without the cases module) create nothing.',
+    tags: ['cases', 'support', 'digest'],
+    spec: {
+      name: 'case-backlog-digest',
+      summary: 'Daily digest task of open cases by priority and age, with SLA-breached count. Skips when the queue is empty.',
+      triggerEvent: 'schedule.daily',
+      triggerFilter: { cron: '0 8 * * 1-5' },
+      actions: [
+        { kind: 'create_task', title_template: 'Case backlog: {count} open — {today}', due_in_days: 0 },
+      ],
+      source_code: `// Daily open-case backlog digest, by priority and age.
+module.exports = {
+  async run({ crm }) {
+    // Returns [] when the cases module is disabled for this workspace.
+    // Belt and braces: re-check status client-side too.
+    var cases = (await crm.listCases({ status: 'open' })).filter(function (c) {
+      return String(c.status || '') === 'open';
+    });
+    if (cases.length === 0) {
+      crm.log('No open cases (or the cases module is disabled). Nothing to digest.');
+      return { open_cases: 0 };
+    }
+    var now = Date.now();
+    var rank = { urgent: 0, high: 1, medium: 2, low: 3 };
+    var byPriority = {};
+    var breached = 0;
+    for (var i = 0; i < cases.length; i++) {
+      var c = cases[i];
+      var p = String(c.priority || 'medium').toLowerCase();
+      byPriority[p] = (byPriority[p] || 0) + 1;
+      if (c.sla_due_at && new Date(c.sla_due_at).getTime() < now) breached++;
+    }
+    var priorityLines = Object.keys(byPriority).sort(function (a, b) {
+      return (rank[a] == null ? 9 : rank[a]) - (rank[b] == null ? 9 : rank[b]);
+    }).map(function (p) { return '- ' + p + ': ' + byPriority[p]; });
+    var oldest = cases.slice().sort(function (a, b) {
+      return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
+    }).slice(0, 5).map(function (c) {
+      var days = Math.floor((now - new Date(c.created_at || now).getTime()) / 86400000);
+      return '- #' + c.id + ' "' + (c.subject || '') + '" [' + (c.priority || 'medium') + '] — open ' + days + ' day(s)';
+    });
+    var today = new Date().toISOString().slice(0, 10);
+    var urgent = (byPriority.urgent || 0) > 0 || breached > 0;
+    await crm.createTask({
+      title: 'Case backlog: ' + cases.length + ' open' + (breached ? ', ' + breached + ' past SLA' : '') + ' — ' + today,
+      description: 'Open cases by priority:\\n' + priorityLines.join('\\n') + '\\n' +
+        'Past their SLA due time: ' + breached + '\\n' +
+        'Oldest open cases:\\n' + oldest.join('\\n') + '\\n' +
+        'Work the breached and urgent ones first; then knock down the oldest.',
+      due_date: today,
+      priority: urgent ? 'urgent' : 'medium',
+    });
+    crm.log('Case backlog: ' + cases.length + ' open, ' + breached + ' past SLA.');
+    return { open_cases: cases.length, sla_breached: breached };
+  },
+};`,
+    },
+  },
+  {
+    slug: 'ai-case-triage',
+    name: 'AI case triage & reply draft',
+    category: 'cx',
+    icon: '🤖',
+    summary:
+      'First response is half classification, half composition — and both are automatable enough to draft. When a case is filed, this reads it and makes one metered AI call to classify it (category, suggested severity) and draft a first reply, landing both in a triage task for a human to review and send (AI never replies to the customer itself). Without AI, the task carries the case details and a ready-to-run copilot brief instead.',
+    tags: ['cases', 'support', 'ai'],
+    spec: {
+      name: 'ai-case-triage',
+      summary: 'On case creation, one AI call classifies the case and drafts a first reply into a review task. Falls back to a copilot brief.',
+      triggerEvent: 'case.created',
+      triggerFilter: null,
+      actions: [
+        { kind: 'create_task', title_template: 'Triage & reply: {case.subject}', due_in_days: 0 },
+        {
+          kind: 'claude_complete',
+          prompt_template:
+            'Classify this support case (category + suggested severity, one line each) and draft a short, empathetic first reply. Case: {case.subject} — {case.description}',
+          store_as: 'triage',
+        },
+      ],
+      source_code: `// AI-classify a new case and draft the first reply into a review task.
+module.exports = {
+  async run({ crm, input }) {
+    var t = (input && input.trigger) || input || {};
+    var c = t.case || t.record || t;
+    var caseId = Number(c.id || t.caseId || t.case_id);
+    // Pull the full case for its description when readable (returns null if
+    // the cases module is disabled — the payload still carries the basics).
+    var full = (Number.isInteger(caseId) && caseId > 0) ? await crm.getCase(caseId) : null;
+    var subject = (full && full.subject) || c.subject || c.title || 'new support case';
+    var descr = (full && full.description) ? String(full.description).slice(0, 2000) : '';
+    var priority = String((full && full.priority) || c.priority || 'medium').toLowerCase();
+    var brief = 'Classify this support case (category and suggested severity, one line each), then draft a short, empathetic first reply. ' +
+      'Case subject: "' + subject + '".' + (descr ? ' Details: ' + descr : '');
+    var triage = null;
+    var ai = await crm.ai.complete({ prompt: brief + ' Output: two classification lines, then the reply body.', max_tokens: 450 });
+    if (ai && ai.ok && ai.text) triage = ai.text;
+    var sameDay = priority === 'urgent' || priority === 'critical' || priority === 'high';
+    var due = new Date(Date.now() + (sameDay ? 0 : 86400000)).toISOString().slice(0, 10);
+    await crm.createTask({
+      title: 'Triage & reply: ' + subject,
+      description: 'Case priority: ' + priority + '\\n' +
+        (triage
+          ? 'AI triage + suggested reply (review before sending — nothing was sent to the customer):\\n' + triage
+          : 'Copilot brief (paste into chat to classify and draft the reply): ' + brief),
+      due_date: due,
+      priority: sameDay ? 'urgent' : 'high',
+      contact_id: (full && full.contact_id) || null,
+    });
+    crm.log('AI triage task created for case: ' + subject + '. AI output: ' + (triage ? 'yes' : 'no'));
+    return { task_created: true, ai_drafted: !!triage };
+  },
+};`,
+    },
+  },
+  {
+    slug: 'case-sla-escalation',
+    name: 'Case SLA escalation',
+    category: 'cx',
+    icon: '📛',
+    summary:
+      'An SLA that breaches silently isn\'t an SLA, it\'s a suggestion. Every hour this checks open cases against their SLA due time; breached cases get their priority bumped one level (up to eight per pass — already-urgent cases can\'t climb further, so it converges instead of churning), and one escalation task lists everything currently past due for a manager to work. Workspaces without the cases module see it quietly do nothing.',
+    tags: ['cases', 'sla', 'escalation'],
+    spec: {
+      name: 'case-sla-escalation',
+      summary: 'Hourly: open cases past sla_due_at get a one-level priority bump (max 8/pass) plus one manager escalation task.',
+      triggerEvent: 'schedule.hourly',
+      triggerFilter: null,
+      actions: [
+        { kind: 'set_field', entity: 'case', field: 'priority', value: 'escalated_one_level' },
+        { kind: 'create_task', title_template: 'SLA breaches: {count} case(s) past due', due_in_days: 0 },
+      ],
+      source_code: `// Escalate open cases that have breached their SLA due time.
+module.exports = {
+  async run({ crm }) {
+    // Returns [] when the cases module is disabled for this workspace.
+    var cases = await crm.listCases({ status: 'open' });
+    var now = Date.now();
+    var breached = cases.filter(function (c) {
+      return String(c.status || '') === 'open' && c.sla_due_at && new Date(c.sla_due_at).getTime() < now;
+    });
+    if (breached.length === 0) {
+      crm.log('No open cases past their SLA due time (or the cases module is disabled).');
+      return { breached: 0 };
+    }
+    var ladder = { low: 'medium', medium: 'high', high: 'urgent' };
+    var bumped = 0;
+    for (var i = 0; i < breached.length && bumped < 8; i++) {
+      var c = breached[i];
+      var next = ladder[String(c.priority || 'medium').toLowerCase()];
+      if (!next) continue; // already urgent — nowhere to climb, don't churn
+      await crm.updateCase(c.id, { priority: next });
+      bumped++;
+    }
+    var lines = breached.slice(0, 10).map(function (c) {
+      var hrs = Math.floor((now - new Date(c.sla_due_at).getTime()) / 3600000);
+      return '- #' + c.id + ' "' + (c.subject || '') + '" [' + (c.priority || 'medium') + '] — ' + hrs + 'h past SLA';
+    });
+    if (bumped > 0) {
+      var today = new Date().toISOString().slice(0, 10);
+      await crm.createTask({
+        title: 'SLA breaches: ' + breached.length + ' case(s) past due',
+        description: 'These open cases are past their SLA due time (priorities bumped one level on ' + bumped + ' of them):\\n' +
+          lines.join('\\n') +
+          (breached.length > 10 ? '\\n...and ' + (breached.length - 10) + ' more.' : '') +
+          '\\nGet a human response onto each one today and reset expectations with the customer honestly.',
+        due_date: today,
+        priority: 'urgent',
+      });
+    }
+    crm.log('SLA-breached cases: ' + breached.length + '; priorities bumped: ' + bumped + '.');
+    return { breached: breached.length, bumped: bumped };
+  },
+};`,
+    },
+  },
+  {
+    slug: 'renewal-pipeline-digest',
+    name: 'Renewal pipeline digest',
+    category: 'cx',
+    icon: '📆',
+    summary:
+      'Renewals are a pipeline too — they just don\'t get pipeline reviews unless someone builds one. Every Monday this rolls your service contracts up by renewal stage, lists everything ending within 90 days with its value, and calls out the at-risk ones — a single weekly digest that makes the renewal book as visible as the new-business board. Needs the customer-success module; without it, it quietly does nothing.',
+    tags: ['renewals', 'contracts', 'digest'],
+    spec: {
+      name: 'renewal-pipeline-digest',
+      summary: 'Weekly (Monday) digest task of service contracts by renewal stage, with 90-day expirations and at-risk contracts called out.',
+      triggerEvent: 'schedule.daily',
+      triggerFilter: { cron: '0 8 * * 1' },
+      actions: [
+        { kind: 'create_task', title_template: 'Renewal pipeline — {today}', due_in_days: 0 },
+      ],
+      source_code: `// Weekly renewal-book digest from service contracts.
+module.exports = {
+  async run({ crm, input }) {
+    var t = (input && input.trigger) || input || {};
+    var ref = t.date ? new Date(String(t.date)) : new Date();
+    if (ref.getUTCDay() !== 1) {
+      crm.log('Not Monday — the weekly renewal digest runs Mondays.');
+      return { skipped: true, reason: 'not_monday' };
+    }
+    // Returns [] when the customer-success module is disabled.
+    var contracts = await crm.listServiceContracts({});
+    if (contracts.length === 0) {
+      crm.log('No service contracts (or the customer-success module is disabled).');
+      return { contracts: 0 };
+    }
+    var byStage = {};
+    var endingSoon = [];
+    var atRisk = [];
+    var now = Date.now();
+    var horizon = now + 90 * 86400000;
+    for (var i = 0; i < contracts.length; i++) {
+      var c = contracts[i];
+      var stage = c.renewal_stage || '(no stage)';
+      byStage[stage] = (byStage[stage] || 0) + 1;
+      if (String(c.renewal_stage || '').toLowerCase() === 'at_risk') atRisk.push(c);
+      if (c.end_date) {
+        var e = new Date(c.end_date).getTime();
+        if (e >= now && e <= horizon) endingSoon.push(c);
+      }
+    }
+    function money(c) {
+      var v = c.annual_value != null ? c.annual_value : (c.monthly_amount != null ? Number(c.monthly_amount) * 12 : null);
+      return v == null ? '?' : Math.round(Number(v) || 0);
+    }
+    var stageLines = Object.keys(byStage).map(function (s) { return '- ' + s + ': ' + byStage[s]; });
+    endingSoon.sort(function (a, b) { return new Date(a.end_date).getTime() - new Date(b.end_date).getTime(); });
+    var soonLines = endingSoon.slice(0, 10).map(function (c) {
+      return '- "' + (c.name || ('#' + c.id)) + '" ends ' + String(c.end_date).slice(0, 10) + ' ($' + money(c) + '/yr)';
+    });
+    var riskLines = atRisk.slice(0, 8).map(function (c) {
+      return '- "' + (c.name || ('#' + c.id)) + '" ($' + money(c) + '/yr)' + (c.churn_reason ? ' — ' + c.churn_reason : '');
+    });
+    var today = new Date().toISOString().slice(0, 10);
+    await crm.createTask({
+      title: 'Renewal pipeline — ' + today + ' (' + contracts.length + ' contracts, ' + atRisk.length + ' at risk)',
+      description: 'Contracts by renewal stage:\\n' + stageLines.join('\\n') + '\\n' +
+        'Ending within 90 days (' + endingSoon.length + '):\\n' + (soonLines.join('\\n') || '- none') + '\\n' +
+        'At risk (' + atRisk.length + '):\\n' + (riskLines.join('\\n') || '- none') + '\\n' +
+        'Treat the at-risk list as this week\\'s calls, not this quarter\\'s.',
+      due_date: today,
+      priority: atRisk.length > 0 ? 'high' : 'medium',
+    });
+    crm.log('Renewal digest: ' + contracts.length + ' contracts, ' + endingSoon.length + ' ending in 90d, ' + atRisk.length + ' at risk.');
+    return { contracts: contracts.length, ending_90d: endingSoon.length, at_risk: atRisk.length };
+  },
+};`,
+    },
+  },
+  {
+    slug: 'churn-risk-agent',
+    name: 'Churn-risk agent',
+    category: 'cx',
+    icon: '🚩',
+    summary:
+      'Churn has two tells the CRM can already see: contracts marked at-risk, and accounts whose deal activity stopped weeks ago. Every day this combines both into a red/yellow board — red for at-risk contracts and 60-plus-day silences, yellow for accounts drifting past 30 days — and files one review task. With AI enabled, a save-play for the most exposed red account is drafted right into the task (metered per-org); without it, the task carries the copilot brief.',
+    tags: ['churn', 'retention', 'ai'],
+    spec: {
+      name: 'churn-risk-agent',
+      summary: 'Daily red/yellow churn board from at-risk contracts + account silence, with an AI save-play for the top red account.',
+      triggerEvent: 'schedule.daily',
+      triggerFilter: { cron: '0 9 * * 1-5' },
+      actions: [
+        { kind: 'create_task', title_template: 'Churn risk board — {counts}', due_in_days: 0 },
+        {
+          kind: 'claude_complete',
+          prompt_template:
+            'Draft a three-step save-play for {account}: the opening message, the internal fix to offer, and the executive touch. Under 120 words.',
+          store_as: 'save_play',
+        },
+      ],
+      source_code: `// Daily red/yellow churn-risk board with an AI save-play for the top risk.
+// ── CONFIG ─────────────────────────────────────────────────────────────────
+var RED_QUIET_DAYS = 60;    // account silence that lands on the red list
+var YELLOW_QUIET_DAYS = 30; // account silence that lands on the yellow list
+// ───────────────────────────────────────────────────────────────────────────
+module.exports = {
+  async run({ crm }) {
+    // Both reads degrade to [] when their modules are disabled.
+    var atRisk = (await crm.listServiceContracts({ renewal_stage: 'at_risk' })).filter(function (c) {
+      return String(c.renewal_stage || '').toLowerCase() === 'at_risk';
+    });
+    var deals = await crm.listDeals({ status: 'open' });
+    var companies = await crm.listCompanies({});
+    var nameById = {};
+    for (var i = 0; i < companies.length; i++) nameById[companies[i].id] = companies[i].name;
+    var lastByCompany = {};
+    var amountByCompany = {};
+    for (var j = 0; j < deals.length; j++) {
+      var d = deals[j];
+      if (!d.company_id) continue;
+      var t = new Date(d.last_activity_at || d.updated_at || d.created_at || 0).getTime();
+      if (!lastByCompany[d.company_id] || t > lastByCompany[d.company_id]) lastByCompany[d.company_id] = t;
+      amountByCompany[d.company_id] = (amountByCompany[d.company_id] || 0) + (Number(d.amount) || 0);
+    }
+    var now = Date.now();
+    var red = [];
+    var yellow = [];
+    Object.keys(lastByCompany).forEach(function (id) {
+      var days = Math.floor((now - lastByCompany[id]) / 86400000);
+      var row = { name: nameById[id] || ('company #' + id), days: days, amount: amountByCompany[id] || 0 };
+      if (days >= RED_QUIET_DAYS) red.push(row);
+      else if (days >= YELLOW_QUIET_DAYS) yellow.push(row);
+    });
+    red.sort(function (a, b) { return b.amount - a.amount; });
+    yellow.sort(function (a, b) { return b.amount - a.amount; });
+    if (atRisk.length === 0 && red.length === 0 && yellow.length === 0) {
+      crm.log('No at-risk contracts and no quiet accounts. The book looks healthy today.');
+      return { red: 0, yellow: 0, at_risk_contracts: 0 };
+    }
+    var redLines = atRisk.slice(0, 6).map(function (c) {
+      return '- RED (contract at risk): "' + (c.name || ('#' + c.id)) + '"' + (c.churn_reason ? ' — ' + c.churn_reason : '');
+    }).concat(red.slice(0, 6).map(function (r) {
+      return '- RED (silent ' + r.days + 'd): ' + r.name + ' ($' + Math.round(r.amount) + ' open)';
+    }));
+    var yellowLines = yellow.slice(0, 8).map(function (r) {
+      return '- YELLOW (silent ' + r.days + 'd): ' + r.name + ' ($' + Math.round(r.amount) + ' open)';
+    });
+    // One metered AI call: a save-play for the most exposed red entry.
+    var top = atRisk.length > 0 ? (atRisk[0].name || ('contract #' + atRisk[0].id)) : (red.length > 0 ? red[0].name : null);
+    var savePlay = null;
+    var brief = top
+      ? 'Draft a three-step save-play for the account "' + top + '" showing churn-risk signals: the opening message to send, the internal fix to offer, and the executive touch. Under 120 words.'
+      : null;
+    if (brief) {
+      var ai = await crm.ai.complete({ prompt: brief + ' No preamble.', max_tokens: 300 });
+      if (ai && ai.ok && ai.text) savePlay = ai.text;
+    }
+    var today = new Date().toISOString().slice(0, 10);
+    await crm.createTask({
+      title: 'Churn risk board — ' + (atRisk.length + red.length) + ' red, ' + yellow.length + ' yellow',
+      description: 'Red — act this week:\\n' + (redLines.join('\\n') || '- none') + '\\n' +
+        'Yellow — schedule a touch:\\n' + (yellowLines.join('\\n') || '- none') + '\\n' +
+        (savePlay
+          ? 'AI save-play for ' + top + ' (review before using):\\n' + savePlay
+          : (brief ? 'Copilot brief (paste into chat for a save-play): ' + brief : '')),
+      due_date: today,
+      priority: (atRisk.length + red.length) > 0 ? 'high' : 'medium',
+    });
+    crm.log('Churn board: ' + (atRisk.length + red.length) + ' red (' + atRisk.length + ' contracts), ' + yellow.length + ' yellow. AI save-play: ' + (savePlay ? 'yes' : 'no'));
+    return { red: atRisk.length + red.length, yellow: yellow.length, ai_drafted: !!savePlay };
+  },
+};`,
+    },
+  },
+  {
+    slug: 'expansion-signal-agent',
+    name: 'Expansion-signal agent',
+    category: 'cx',
+    icon: '🌱',
+    summary:
+      'Your cheapest pipeline is the customer who already said yes once and currently has nothing open. Every day this finds companies with closed-won history and zero open deals, ranks them by what they\'ve bought, and files one expansion review task. With AI enabled, an upsell outreach draft for the biggest such account lands right in the task (metered per-org); without it, the task carries the copilot brief to draft it in chat.',
+    tags: ['expansion', 'upsell', 'ai'],
+    spec: {
+      name: 'expansion-signal-agent',
+      summary: 'Daily digest of won-history companies with no open pipeline, with an AI outreach draft for the largest.',
+      triggerEvent: 'schedule.daily',
+      triggerFilter: { cron: '0 9 * * 2' },
+      actions: [
+        { kind: 'create_task', title_template: 'Expansion candidates ({count})', due_in_days: 2 },
+        {
+          kind: 'claude_complete',
+          prompt_template:
+            'Draft a short expansion outreach email to {company}, a customer with ${won} in won business and no open deals. Reference the relationship, propose a check-in about what has changed. Under 100 words.',
+          store_as: 'outreach',
+        },
+      ],
+      source_code: `// Surface won-history accounts with no open pipeline as expansion plays.
+module.exports = {
+  async run({ crm }) {
+    // One read covers both sides: split won history from open pipeline by the
+    // fields on the rows themselves.
+    var deals = await crm.listDeals({});
+    var won = deals.filter(function (d) { return String(d.stage || '').toUpperCase() === 'CLOSED_WON'; });
+    if (won.length === 0) {
+      crm.log('No closed-won history yet — no expansion base to scan.');
+      return { candidates: 0 };
+    }
+    var hasOpen = {};
+    for (var i = 0; i < deals.length; i++) {
+      if (deals[i].company_id && String(deals[i].status || '') === 'open') hasOpen[deals[i].company_id] = true;
+    }
+    var wonByCompany = {};
+    for (var j = 0; j < won.length; j++) {
+      var d = won[j];
+      if (!d.company_id || hasOpen[d.company_id]) continue;
+      var r = wonByCompany[d.company_id] || (wonByCompany[d.company_id] = { amount: 0, count: 0 });
+      r.amount += Number(d.amount) || 0;
+      r.count++;
+    }
+    var ids = Object.keys(wonByCompany);
+    if (ids.length === 0) {
+      crm.log('Every won-history account already has open pipeline. Nothing to expand today.');
+      return { candidates: 0 };
+    }
+    var companies = await crm.listCompanies({});
+    var nameById = {};
+    for (var k = 0; k < companies.length; k++) nameById[companies[k].id] = companies[k].name;
+    ids.sort(function (a, b) { return wonByCompany[b].amount - wonByCompany[a].amount; });
+    var lines = ids.slice(0, 5).map(function (id) {
+      var r = wonByCompany[id];
+      return '- ' + (nameById[id] || ('company #' + id)) + ': $' + Math.round(r.amount) + ' won across ' + r.count + ' deal(s), no open pipeline';
+    });
+    // One metered AI call: outreach draft for the biggest candidate.
+    var topId = ids[0];
+    var topName = nameById[topId] || ('company #' + topId);
+    var brief = 'Draft a short expansion outreach email to ' + topName + ', an existing customer with $' +
+      Math.round(wonByCompany[topId].amount) + ' in won business and no open deals with us right now. ' +
+      'Reference the relationship warmly and propose a check-in about what has changed since. Under 100 words.';
+    var draft = null;
+    var ai = await crm.ai.complete({ prompt: brief + ' Output the email body only.', max_tokens: 250 });
+    if (ai && ai.ok && ai.text) draft = ai.text;
+    var due = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
+    await crm.createTask({
+      title: 'Expansion candidates (' + ids.length + '): won history, no open pipeline',
+      description: 'These customers have bought before and have nothing open now:\\n' + lines.join('\\n') +
+        (ids.length > 5 ? '\\n...and ' + (ids.length - 5) + ' more.' : '') + '\\n' +
+        (draft
+          ? 'AI outreach draft for ' + topName + ' (review before sending):\\n' + draft
+          : 'Copilot brief (paste into chat to draft the outreach): ' + brief),
+      due_date: due,
+      priority: 'medium',
+    });
+    crm.log('Expansion candidates: ' + ids.length + '. AI outreach draft: ' + (draft ? 'yes' : 'no'));
+    return { candidates: ids.length, ai_drafted: !!draft };
+  },
+};`,
+    },
+  },
+  {
+    slug: 'relationship-anniversary-touch',
+    name: 'Relationship anniversary touch',
+    category: 'cx',
+    icon: '🎂',
+    summary:
+      'Zoho made birthday emails a signature feature for a reason: dated personal touches are cheap and remembered. The CRM doesn\'t store birthdays, so this uses the date it CAN see — the anniversary of each contact joining your book. Every day it finds contacts whose add-date anniversary is today or tomorrow (at least ten months in) and files a touch task per contact (up to four). With AI enabled, the first one gets a warm note drafted right in (metered per-org); the rest carry a ready-to-run copilot brief.',
+    tags: ['relationship', 'anniversary', 'ai'],
+    spec: {
+      name: 'relationship-anniversary-touch',
+      summary: 'Daily: contacts whose add-date anniversary is today/tomorrow each get a touch task (max 4); AI drafts the first note.',
+      triggerEvent: 'schedule.daily',
+      triggerFilter: { cron: '0 8 * * *' },
+      actions: [
+        { kind: 'create_task', title_template: 'Anniversary touch: {contact.name}', due_in_days: 1 },
+        {
+          kind: 'claude_complete',
+          prompt_template:
+            'Write a warm two-sentence anniversary note to {contact.name} marking {years} year(s) since we started working together. No sales pitch. Output the note only.',
+          store_as: 'note',
+        },
+      ],
+      source_code: `// Touch tasks on the anniversary of each contact joining the book.
+module.exports = {
+  async run({ crm, input }) {
+    var t = (input && input.trigger) || input || {};
+    var ref = t.date ? new Date(String(t.date)) : new Date();
+    var contacts = await crm.listContacts({});
+    var todayMd = ref.toISOString().slice(5, 10);
+    var tomorrowMd = new Date(ref.getTime() + 86400000).toISOString().slice(5, 10);
+    var now = ref.getTime();
+    var hits = contacts.filter(function (c) {
+      if (!c.created_at) return false;
+      var iso = new Date(c.created_at).toISOString();
+      var md = iso.slice(5, 10);
+      if (md !== todayMd && md !== tomorrowMd) return false;
+      // At least ~10 months old, so brand-new contacts don't get an
+      // "anniversary" the day after they were added.
+      return (now - new Date(c.created_at).getTime()) > 300 * 86400000;
+    });
+    if (hits.length === 0) {
+      crm.log('No contact anniversaries today or tomorrow.');
+      return { anniversaries: 0 };
+    }
+    var due = new Date(now + 86400000).toISOString().slice(0, 10);
+    var created = 0;
+    var drafted = 0;
+    for (var i = 0; i < hits.length && created < 4; i++) {
+      var c = hits[i];
+      var name = [c.first_name, c.last_name].filter(Boolean).join(' ') || ('contact #' + c.id);
+      var years = Math.max(1, Math.round((now - new Date(c.created_at).getTime()) / (365 * 86400000)));
+      var brief = 'Write a warm two-sentence anniversary note to ' + name + ' marking ' + years +
+        ' year(s) since we started working together. No sales pitch.';
+      var note = null;
+      if (drafted === 0) {
+        // One metered AI call per run, spent on the first anniversary.
+        var ai = await crm.ai.complete({ prompt: brief + ' Output the note only.', max_tokens: 150 });
+        if (ai && ai.ok && ai.text) { note = ai.text; drafted++; }
+      }
+      await crm.createTask({
+        title: 'Anniversary touch: ' + name + ' (' + years + ' year' + (years === 1 ? '' : 's') + ')',
+        description: 'It is ' + years + ' year(s) since ' + name + ' joined your book' +
+          (c.email ? ' (' + c.email + ')' : '') + '. A short personal note lands better than any campaign.\\n' +
+          (note
+            ? 'AI note (review before sending):\\n' + note
+            : 'Copilot brief (paste into chat to draft it): ' + brief),
+        due_date: due,
+        priority: 'low',
+        contact_id: c.id,
+      });
+      created++;
+    }
+    crm.log('Contact anniversaries: ' + hits.length + '; touch tasks created: ' + created + '; AI notes: ' + drafted);
+    return { anniversaries: hits.length, tasks_created: created, ai_drafted: drafted };
   },
 };`,
     },

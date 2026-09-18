@@ -37,10 +37,19 @@
 //         calls, 5s isolate CPU / 15s wall clock (+15s per AI call, 45s
 //         ceiling) — see PLUGIN_SDK_REFERENCE.md — cap every loop,
 //       - tolerate ANY input shape, including null (manual test runs) and
-//         whatever payload the event-trigger engine delivers,
-//       - reference only fields on the SDK read allowlists (leads/cases/
-//         meetings are NOT readable — entries for those events work from the
-//         trigger payload alone).
+//         whatever payload the event-trigger engine delivers (triggered runs
+//         receive input.trigger = { event, ...payload } — parse defensively:
+//         `var t = (input && input.trigger) || input || {}`),
+//       - reference only fields on the SDK read allowlists. The module
+//         objects (leads / cases / quotes / meetings / service_contracts)
+//         are flag-gated per org: a disabled module returns [] / null with a
+//         run-log warning — treat empty as "disabled or nothing to do",
+//         never throw.
+//   • Per-entry CONFIG lives in a clearly-commented CONFIG block at the top
+//     of source_code (trigger_filter_json is matching-only — dispatch ANDs
+//     it against the event payload and never passes it into the run; the
+//     schedule worker ignores it entirely, so the cron strings in scheduled
+//     entries' triggerFilter are display metadata).
 //   • Entries needing per-org configuration declare requiredConfig; entries
 //     needing an external integration declare requiredIntegration.
 //

@@ -44,7 +44,16 @@ const SDK_METHOD_ALLOWLIST = [
   'getContact', 'listContacts',
   'getCompany', 'listCompanies',
   'getTask', 'listTasks',
+  // Module-object reads (2026-09 expansion). Flag-gated per org inside the
+  // SDK: leads_enabled / customer_success_enabled / quotes_enabled — a
+  // disabled module returns []/null + a run-log warning, never an error.
+  'getLead', 'listLeads',
+  'getCase', 'listCases',
+  'getQuote', 'listQuotes',
+  'getMeeting', 'listMeetings',
+  'listServiceContracts',
   'updateDeal', 'updateContact', 'updateCompany', 'updateTask',
+  'updateLead', 'updateCase',
   'createTask',
   // The metered AI bridge (crm.ai.complete — max 2 upstream calls per run,
   // billing-gated in-path; see PLUGIN_SDK_REFERENCE.md). Namespaced entries
@@ -62,8 +71,8 @@ const AI_NAMESPACE_ALLOWLIST = ['complete'];
 // here updates the authoring surface too. The DISPATCHED subset lives in
 // services/pluginEvents.PLUGIN_EVENTS (migration 164) — this authoring list
 // must stay a superset of it (test-enforced in test/pluginEvents.test.js).
-// 'deal.updated', 'invoice.paid', 'task.completed' and 'schedule.weekly' are
-// accepted at authoring time but have no dispatch call site yet.
+// 'invoice.paid' and 'schedule.weekly' are accepted at authoring time but
+// have no dispatch call site yet.
 const TRIGGER_EVENTS = [
   'deal.created',
   'deal.updated',

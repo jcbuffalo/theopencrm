@@ -64,6 +64,11 @@ const AI_MAX_SYSTEM_CHARS = 2048;     // system prompt cap
 // Called through the module objects so tests can live-stub them.
 const aiService = require('./ai');
 const aiBilling = require('../middleware/requireAiBilling');
+// Called through the module object (featureFlags.hasFeature) so tests can
+// live-stub it — same convention as aiService / aiBilling above. hasFeature
+// carries its own 30s per-org cache, so the per-call module gate below is
+// almost always a Map lookup, not a Postgres round-trip.
+const featureFlags = require('./featureFlags');
 
 // Hard cap on the number of DB-touching SDK calls a single plugin run can
 // make. Each `crm.getDeal / listDeals / get* / list* / update* / createTask`
@@ -137,6 +142,12 @@ const UPDATE_ALLOWLISTS = {
   contacts:  ['owner_id', 'company_id', 'status'],
   companies: ['owner_id', 'type', 'status'],
   tasks:     ['assigned_to', 'status', 'due_date', 'priority'],
+  // Module objects (2026-09 SDK expansion). Same posture as the four core
+  // tables: working-the-record fields only. Status values are validated at
+  // the route/API layer, not here — a bogus status writes a bogus string, the
+  // same failure mode the bulk-ops surface already accepts.
+  leads:     ['status', 'owner_user_id', 'notes'],
+  cases:     ['status', 'priority', 'sla_due_at'],
 };
 
 // Filter allowlists for list*() functions. Keys not in this set are
@@ -147,6 +158,44 @@ const FILTER_ALLOWLISTS = {
   contacts:  ['status', 'company_id', 'owner_id'],
   companies: ['type', 'status', 'owner_id'],
   tasks:     ['status', 'contact_id', 'deal_id', 'priority', 'assigned_to'],
+  // Module objects (2026-09 SDK expansion). Filter keys are REAL column
+  // names (they interpolate into the WHERE clause), so leads filter on
+  // owner_user_id — not the owner_id shorthand deals use.
+  leads:             ['status', 'source', 'owner_user_id'],
+  cases:             ['status', 'priority', 'company_id'],
+  quotes:            ['status', 'deal_id', 'customer_id'],
+  meetings:          ['deal_id', 'company_id'], // + after/before range keys, see RANGE_FILTER_ALLOWLISTS
+  service_contracts: ['renewal_stage', 'status', 'customer_id'],
+};
+
+// Date-range filter keys, per table. Unlike FILTER_ALLOWLISTS (strict
+// equality on a real column), each entry maps a VIRTUAL filter key to a
+// (column, operator) pair. Values must be strings Date.parse accepts;
+// anything else is silently dropped — the same fail-quiet posture as
+// sanitizeFilter. Only meetings has a clean single timestamp axis
+// (starts_at) for range semantics today; extend deliberately, one column
+// per table, never author-supplied column names.
+const RANGE_FILTER_ALLOWLISTS = {
+  meetings: {
+    after:  { column: 'starts_at', op: '>=' },
+    before: { column: 'starts_at', op: '<=' },
+  },
+};
+
+// Per-org module gating (mirrors the /api mounts in index.js). A read or
+// update against a table whose module is OFF for the org DEGRADES — empty
+// list / null + one run-log warning — instead of erroring, so a library
+// entry installed org-wide keeps running in orgs that disabled the module.
+// The gate costs 0 query budget (featureFlags caches per org for 30s).
+// Deliberate strictness note: service_contracts' base CRUD mount is ungated,
+// but its renewal surface (the fields this SDK exposes) is
+// customer_success_enabled — the SDK fails closed on the module flag.
+// meetings / tasks / deals / contacts / companies are core: never gated.
+const TABLE_FEATURE_FLAGS = {
+  leads:             'leads_enabled',
+  cases:             'customer_success_enabled',
+  quotes:            'quotes_enabled',
+  service_contracts: 'customer_success_enabled',
 };
 
 // Read column allowlists for get*/list*() functions. MAX_ROWS caps row count
@@ -179,6 +228,49 @@ const READ_COLUMN_ALLOWLISTS = {
     'id', 'title', 'description', 'status', 'priority', 'due_date',
     'assigned_to', 'contact_id', 'deal_id', 'created_at', 'updated_at',
   ],
+  // leads (migrations 130 + 147): business fields only. email/phone are
+  // included (same PII posture as contacts). EXCLUDED on purpose: notes
+  // (free-text can carry sensitive detail — same rule as deals.notes),
+  // user_id (internal tenancy fallback). converted_* FKs are included so a
+  // plugin can follow a converted lead to its contact/deal.
+  leads: [
+    'id', 'name', 'email', 'phone', 'company_name', 'title', 'source',
+    'status', 'score', 'owner_user_id', 'converted_contact_id',
+    'converted_deal_id', 'created_at', 'updated_at',
+  ],
+  // cases (migration 134): description IS the ticket body an automation
+  // needs (mirrors tasks.description). EXCLUDED: user_id (internal).
+  cases: [
+    'id', 'subject', 'description', 'status', 'priority', 'company_id',
+    'contact_id', 'owner_user_id', 'sla_due_at', 'resolved_at',
+    'created_at', 'updated_at',
+  ],
+  // quotes (Zang customer quotes — migrations 038/050/149). EXCLUDED on
+  // purpose: public_id (externally shareable identifier — never hand an
+  // outside-the-org handle to plugin code), portal_response /
+  // portal_response_note / portal_response_at (customer-portal columns),
+  // notes (free-text), created_by / updated_by / entity_version (audit
+  // internals), user_id (internal).
+  quotes: [
+    'id', 'title', 'status', 'total_amount', 'valid_until',
+    'current_revision', 'deal_id', 'customer_id', 'created_at', 'updated_at',
+  ],
+  // meetings (migration 137). EXCLUDED: notes (free-text meeting notes are
+  // the most PII-dense column on the table), external_event_id (internal
+  // Google-sync linkage), created_by / user_id (internal).
+  meetings: [
+    'id', 'title', 'starts_at', 'ends_at', 'company_id', 'deal_id',
+    'contact_id', 'location', 'created_at', 'updated_at',
+  ],
+  // service_contracts (migrations 046 + 096 renewal columns). churn_reason
+  // is included — it's the business field renewal automations act on.
+  // EXCLUDED: notes (free-text), user_id (internal).
+  service_contracts: [
+    'id', 'name', 'contract_type', 'status', 'start_date', 'end_date',
+    'renewal_notice_days', 'monthly_amount', 'annual_value', 'renewal_stage',
+    'churn_reason', 'renewed_contract_id', 'customer_id', 'deal_id',
+    'created_at', 'updated_at',
+  ],
 };
 
 function readColumnsFor(table) {
@@ -195,8 +287,13 @@ function readColumnsFor(table) {
 // entity <-> table maps. The SDK speaks tables; the confirm-first apply layer
 // and the audit trail speak entities. Kept here (single source) so the two
 // modules can never drift on the mapping.
-const ENTITY_BY_TABLE = { deals: 'deal', contacts: 'contact', companies: 'company', tasks: 'task' };
-const TABLE_BY_ENTITY = { deal: 'deals', contact: 'contacts', company: 'companies', task: 'tasks' };
+// leads/cases appear here because they have a WRITE surface (updateLead /
+// updateCase → proposals → pluginActions apply). quotes / meetings /
+// service_contracts are READ-ONLY in the SDK and deliberately absent — an
+// entity missing from TABLE_BY_ENTITY can never pass proposal re-validation,
+// so a tampered stored proposal naming them is rejected at apply time.
+const ENTITY_BY_TABLE = { deals: 'deal', contacts: 'contact', companies: 'company', tasks: 'task', leads: 'lead', cases: 'case' };
+const TABLE_BY_ENTITY = { deal: 'deals', contact: 'contacts', company: 'companies', task: 'tasks', lead: 'leads', case: 'cases' };
 
 // Normalize + validate a createTask payload. Extracted to module scope so the
 // confirm-first apply path (services/pluginActions.js) can re-run the SAME
@@ -272,6 +369,22 @@ function sanitizeFilter(filter, table) {
   return out;
 }
 
+// Extract the validated date-range fragments for a table from a raw filter
+// object. Returns [] when the table has no range keys or none validate. The
+// column and operator come from RANGE_FILTER_ALLOWLISTS (never from the
+// author); the value is bound as a query parameter.
+function sanitizeRange(filter, table) {
+  const spec = RANGE_FILTER_ALLOWLISTS[table];
+  if (!spec || !filter || typeof filter !== 'object') return [];
+  const out = [];
+  for (const key of Object.keys(spec)) {
+    const v = filter[key];
+    if (typeof v !== 'string' || Number.isNaN(Date.parse(v))) continue;
+    out.push({ column: spec[key].column, op: spec[key].op, value: v });
+  }
+  return out;
+}
+
 function sanitizePatch(patch, table) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new Error('patch must be a plain object');
@@ -300,9 +413,10 @@ function assertId(id) {
   return n;
 }
 
-// Build a list of WHERE clauses from a sanitized filter object. Always
-// includes `org_id = $1`; additional fragments increment from $2.
-function buildWhere(table, filter) {
+// Build a list of WHERE clauses from a sanitized filter object (+ optional
+// sanitized range fragments from sanitizeRange). Always includes
+// `org_id = $1`; additional fragments increment from $2.
+function buildWhere(table, filter, ranges = []) {
   const params = [];
   const fragments = ['org_id = $1'];
   let i = 2;
@@ -313,6 +427,10 @@ function buildWhere(table, filter) {
       params.push(v);
       fragments.push(`${k} = $${i++}`);
     }
+  }
+  for (const r of ranges) {
+    params.push(r.value);
+    fragments.push(`${r.column} ${r.op} $${i++}`);
   }
   return { whereSql: fragments.join(' AND '), extraParams: params };
 }
@@ -563,19 +681,39 @@ function buildContext({ orgId, logBuffer, counters, deadline = null, dryRun = fa
     return { ok: true, text: result.text, tokens, model: result.model };
   }
 
+  // Per-call module gate. Returns true for core tables (no flag). For a
+  // flag-gated table it resolves the org's effective flag (explicit setting
+  // wins, missing key falls back to the profile default — the exact same
+  // resolution the /api mount gates use) and, when OFF, logs ONE run-log
+  // warning and returns false so the caller can degrade (empty list / null)
+  // instead of erroring. Costs 0 query budget — featureFlags caches per org.
+  async function moduleEnabled(table) {
+    const flag = TABLE_FEATURE_FLAGS[table];
+    if (!flag) return true;
+    const on = await featureFlags.hasFeature(orgId, flag);
+    if (!on) {
+      pushLog(`crm: the ${table} module ('${flag}') is disabled for this workspace — returning an empty result.`);
+    }
+    return on;
+  }
+
   async function getOne(table, id) {
+    const nid = assertId(id);
+    if (!(await moduleEnabled(table))) return null; // degrade: module OFF, no budget charged
     chargeQuery();
     const cols = readColumnsFor(table);
     const r = await runScopedQuery(
       `SELECT ${cols} FROM ${table} WHERE id = $1 AND org_id = $2 LIMIT 1`,
-      [assertId(id), orgId]
+      [nid, orgId]
     );
     return r.rows[0] || null;
   }
 
   async function listSome(table, filter) {
     const clean = sanitizeFilter(filter, table);
-    const { whereSql, extraParams } = buildWhere(table, clean);
+    const ranges = sanitizeRange(filter, table);
+    if (!(await moduleEnabled(table))) return []; // degrade: module OFF, no budget charged
+    const { whereSql, extraParams } = buildWhere(table, clean, ranges);
     chargeQuery();
     const cols = readColumnsFor(table);
     const r = await runScopedQuery(
@@ -588,6 +726,10 @@ function buildContext({ orgId, logBuffer, counters, deadline = null, dryRun = fa
   async function updateSome(table, id, patch) {
     const clean = sanitizePatch(patch, table);
     const nid = assertId(id);
+    // Module OFF degrades exactly like "row not found in this org" — null,
+    // no proposal recorded, no budget charged. Argument validation above
+    // still throws (an invalid patch is an authoring bug regardless of flags).
+    if (!(await moduleEnabled(table))) return null;
 
     if (dryRun) {
       // CONFIRM-FIRST: do not write. Read the current (org-scoped) row so the
@@ -639,11 +781,30 @@ function buildContext({ orgId, logBuffer, counters, deadline = null, dryRun = fa
     getTask:      (id) => getOne('tasks', id),
     listTasks:    (filter) => listSome('tasks', filter),
 
+    // Module-object reads (2026-09 expansion). Flag-gated per org (see
+    // TABLE_FEATURE_FLAGS): a disabled module returns [] / null plus one
+    // run-log warning instead of erroring, so library entries degrade.
+    getLead:      (id) => getOne('leads', id),
+    listLeads:    (filter) => listSome('leads', filter),
+    getCase:      (id) => getOne('cases', id),
+    listCases:    (filter) => listSome('cases', filter),
+    getQuote:     (id) => getOne('quotes', id),
+    listQuotes:   (filter) => listSome('quotes', filter),
+    getMeeting:   (id) => getOne('meetings', id),
+    listMeetings: (filter) => listSome('meetings', filter),
+    // No getServiceContract — renewal automations operate on cohorts
+    // (renewal_stage / customer_id); a single-row read has no v1 use case.
+    listServiceContracts: (filter) => listSome('service_contracts', filter),
+
     // Writes (column-allowlisted, org-scoped)
     updateDeal:    (id, patch) => updateSome('deals', id, patch),
     updateContact: (id, patch) => updateSome('contacts', id, patch),
     updateCompany: (id, patch) => updateSome('companies', id, patch),
     updateTask:    (id, patch) => updateSome('tasks', id, patch),
+    // Module-object writes — same proposal machinery as the four above
+    // (dryRun captures a proposal; pluginActions re-validates on Apply).
+    updateLead:    (id, patch) => updateSome('leads', id, patch),
+    updateCase:    (id, patch) => updateSome('cases', id, patch),
 
     // Create — only tasks for v1 (the "create follow-up task" automation).
     // Deals/contacts/companies creation is intentionally NOT exposed; it's
@@ -699,7 +860,9 @@ module.exports = {
   buildContext,
   UPDATE_ALLOWLISTS,
   FILTER_ALLOWLISTS,
+  RANGE_FILTER_ALLOWLISTS,
   READ_COLUMN_ALLOWLISTS,
+  TABLE_FEATURE_FLAGS,
   MAX_ROWS,
   MAX_QUERIES_PER_RUN,
   MAX_TASKS_CREATED_PER_RUN,

@@ -261,4 +261,285 @@ module.exports = {
 };`,
     },
   },
+
+  // --------------------------------------------------------------------------
+  // WAVE 2 (2026-09) — dedupe detection, lost-deal cleanup, company rollups.
+  // Weekly entries run on schedule.daily and gate on Monday inside the source
+  // (schedule payloads carry the UTC date; there is no dispatched weekly
+  // event yet). Detection entries file ONE digest and never auto-merge —
+  // merging records is a human decision.
+  // --------------------------------------------------------------------------
+  {
+    slug: 'contact-dupe-detector',
+    name: 'Duplicate-contact detector',
+    category: 'hygiene',
+    icon: '🧑‍🤝‍🧑',
+    summary:
+      'Duplicate contacts split the conversation history and guarantee someone works a cold copy of a warm relationship. Every Monday this sweeps your contacts for records sharing an email address or a normalized full name and files one digest task listing the suspected pairs. It never merges anything itself — merging is a judgment call — it just makes sure the pairs stop hiding.',
+    tags: ['dedupe', 'contacts', 'digest'],
+    spec: {
+      name: 'contact-dupe-detector',
+      summary: 'Weekly (Monday) digest task of contact pairs sharing an email or normalized name. Detection only — never auto-merges.',
+      triggerEvent: 'schedule.daily',
+      triggerFilter: { cron: '0 8 * * 1' },
+      actions: [
+        { kind: 'create_task', title_template: 'Review suspected duplicate contacts ({count})', due_in_days: 2 },
+      ],
+      source_code: `// Weekly sweep for contacts that look like duplicates. Detection only.
+module.exports = {
+  async run({ crm, input }) {
+    var t = (input && input.trigger) || input || {};
+    var ref = t.date ? new Date(String(t.date)) : new Date();
+    if (ref.getUTCDay() !== 1) {
+      crm.log('Not Monday — the weekly duplicate sweep runs Mondays.');
+      return { skipped: true, reason: 'not_monday' };
+    }
+    var contacts = await crm.listContacts({});
+    var byEmail = {};
+    var byName = {};
+    var pairs = [];
+    var flagged = {};
+    function addPair(a, b, why) {
+      var key = Math.min(a.id, b.id) + '-' + Math.max(a.id, b.id);
+      if (flagged[key]) return;
+      flagged[key] = true;
+      pairs.push({ a: a, b: b, why: why });
+    }
+    for (var i = 0; i < contacts.length; i++) {
+      var c = contacts[i];
+      var email = String(c.email || '').trim().toLowerCase();
+      if (email) {
+        if (byEmail[email]) addPair(byEmail[email], c, 'same email ' + email);
+        else byEmail[email] = c;
+      }
+      var name = [c.first_name, c.last_name].filter(Boolean).join(' ')
+        .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      if (name) {
+        if (byName[name]) addPair(byName[name], c, 'same name "' + name + '"');
+        else byName[name] = c;
+      }
+    }
+    if (pairs.length === 0) {
+      crm.log('No suspected duplicate contacts among ' + contacts.length + '.');
+      return { duplicates: 0, contacts: contacts.length };
+    }
+    var lines = pairs.slice(0, 12).map(function (p) {
+      var an = [p.a.first_name, p.a.last_name].filter(Boolean).join(' ') || ('#' + p.a.id);
+      return '- #' + p.a.id + ' and #' + p.b.id + ' (' + an + '): ' + p.why;
+    });
+    var due = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
+    await crm.createTask({
+      title: 'Review suspected duplicate contacts (' + pairs.length + ' pair' + (pairs.length === 1 ? '' : 's') + ')',
+      description: 'These contacts share an email address or a normalized name and may be duplicates:\\n' +
+        lines.join('\\n') +
+        (pairs.length > 12 ? '\\n...and ' + (pairs.length - 12) + ' more pair(s).' : '') +
+        '\\nReview each pair and merge or annotate — this extension only detects, it never merges.',
+      due_date: due,
+      priority: 'medium',
+    });
+    crm.log('Suspected duplicate contact pairs: ' + pairs.length + ' of ' + contacts.length + ' contacts.');
+    return { duplicates: pairs.length, contacts: contacts.length };
+  },
+};`,
+    },
+  },
+  {
+    slug: 'company-dupe-detector',
+    name: 'Duplicate-company detector',
+    category: 'hygiene',
+    icon: '🏢',
+    summary:
+      '"Acme", "Acme Inc" and "Acme, LLC" are one customer wearing three coats — and three copies of the truth about them. Every Monday this normalizes company names (legal suffixes and punctuation stripped) and website domains, matches them, and files one digest task of suspected duplicate pairs. Detection only: merging stays a human call.',
+    tags: ['dedupe', 'companies', 'digest'],
+    spec: {
+      name: 'company-dupe-detector',
+      summary: 'Weekly (Monday) digest task of company pairs matching on normalized name or website domain. Detection only.',
+      triggerEvent: 'schedule.daily',
+      triggerFilter: { cron: '0 8 * * 1' },
+      actions: [
+        { kind: 'create_task', title_template: 'Review suspected duplicate companies ({count})', due_in_days: 2 },
+      ],
+      source_code: `// Weekly sweep for companies that look like duplicates. Detection only.
+module.exports = {
+  async run({ crm, input }) {
+    var t = (input && input.trigger) || input || {};
+    var ref = t.date ? new Date(String(t.date)) : new Date();
+    if (ref.getUTCDay() !== 1) {
+      crm.log('Not Monday — the weekly duplicate sweep runs Mondays.');
+      return { skipped: true, reason: 'not_monday' };
+    }
+    var companies = await crm.listCompanies({});
+    function normName(name) {
+      return String(name || '').toLowerCase()
+        .replace(/\\b(incorporated|inc|llc|ltd|limited|corp|corporation|co|gmbh|plc)\\b/g, ' ')
+        .replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+    function domain(website) {
+      var w = String(website || '').toLowerCase()
+        .replace(/^https?:\\/\\//, '').replace(/^www\\./, '');
+      var slash = w.indexOf('/');
+      return slash === -1 ? w : w.slice(0, slash);
+    }
+    var byName = {};
+    var byDomain = {};
+    var pairs = [];
+    var flagged = {};
+    function addPair(a, b, why) {
+      var key = Math.min(a.id, b.id) + '-' + Math.max(a.id, b.id);
+      if (flagged[key]) return;
+      flagged[key] = true;
+      pairs.push({ a: a, b: b, why: why });
+    }
+    for (var i = 0; i < companies.length; i++) {
+      var c = companies[i];
+      var n = normName(c.name);
+      if (n) {
+        if (byName[n]) addPair(byName[n], c, 'same normalized name "' + n + '"');
+        else byName[n] = c;
+      }
+      var d = domain(c.website);
+      if (d) {
+        if (byDomain[d]) addPair(byDomain[d], c, 'same domain ' + d);
+        else byDomain[d] = c;
+      }
+    }
+    if (pairs.length === 0) {
+      crm.log('No suspected duplicate companies among ' + companies.length + '.');
+      return { duplicates: 0, companies: companies.length };
+    }
+    var lines = pairs.slice(0, 12).map(function (p) {
+      return '- #' + p.a.id + ' "' + (p.a.name || '') + '" and #' + p.b.id + ' "' + (p.b.name || '') + '": ' + p.why;
+    });
+    var due = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
+    await crm.createTask({
+      title: 'Review suspected duplicate companies (' + pairs.length + ' pair' + (pairs.length === 1 ? '' : 's') + ')',
+      description: 'These companies match on normalized name or website domain and may be duplicates:\\n' +
+        lines.join('\\n') +
+        (pairs.length > 12 ? '\\n...and ' + (pairs.length - 12) + ' more pair(s).' : '') +
+        '\\nReview each pair and merge or annotate — this extension only detects, it never merges.',
+      due_date: due,
+      priority: 'medium',
+    });
+    crm.log('Suspected duplicate company pairs: ' + pairs.length + ' of ' + companies.length + ' companies.');
+    return { duplicates: pairs.length, companies: companies.length };
+  },
+};`,
+    },
+  },
+  {
+    slug: 'lost-deal-cleanup',
+    name: 'Lost-deal cleanup sweep',
+    category: 'hygiene',
+    icon: '🧹',
+    summary:
+      'A lost deal that leaves its follow-up tasks open keeps generating busywork for a deal that no longer exists. When a deal moves to closed-lost, this cancels every open task still attached to it (up to 25) and files one wrap-up task asking for the loss reason to be logged — so the task list empties honestly and the loss still teaches something.',
+    tags: ['cleanup', 'closed-lost', 'tasks'],
+    spec: {
+      name: 'lost-deal-cleanup',
+      summary: 'On closed-lost, cancel the deal\'s open tasks (max 25) and create one wrap-up task to log the loss reason.',
+      triggerEvent: 'deal.stage_changed',
+      triggerFilter: { stage: 'CLOSED_LOST' },
+      actions: [
+        { kind: 'set_field', entity: 'task', field: 'status', value: 'cancelled' },
+        { kind: 'create_task', title_template: 'Wrap up lost deal: {deal.title}', due_in_days: 2 },
+      ],
+      source_code: `// Cancel a lost deal's open tasks and ask for the loss reason.
+module.exports = {
+  async run({ crm, input }) {
+    var t = (input && input.trigger) || input || {};
+    var rec = t.deal || t.record || t;
+    var stage = String(t.stage || t.newStage || t.new_stage || rec.stage || '').toUpperCase();
+    if (stage !== 'CLOSED_LOST') return { skipped: true, reason: 'not_closed_lost' };
+    var dealId = Number(rec.id || t.id || t.dealId || t.deal_id);
+    if (!Number.isInteger(dealId) || dealId <= 0) return { skipped: true, reason: 'no_deal_id' };
+    var title = rec.title || t.title || ('deal #' + dealId);
+    var open = await crm.listTasks({ deal_id: dealId, status: 'open' });
+    var cancelled = 0;
+    for (var i = 0; i < open.length && cancelled < 25; i++) {
+      // Belt and braces: only cancel tasks actually linked to this deal and
+      // still open (the filter should guarantee both).
+      var linked = open[i].deal_id == null ? null : Number(open[i].deal_id);
+      if (linked !== dealId) continue;
+      if (open[i].status !== 'open' && open[i].status !== 'in_progress') continue;
+      await crm.updateTask(open[i].id, { status: 'cancelled' });
+      cancelled++;
+    }
+    var due = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
+    await crm.createTask({
+      title: 'Wrap up lost deal: ' + title,
+      description: 'This deal closed lost; ' + cancelled + ' open task(s) on it were cancelled automatically.\\n' +
+        'Before moving on, log the loss reason on the deal: who won instead, why, and what (if anything) would have changed the outcome. ' +
+        'Losses that get a reason become pattern data; losses that do not just become quota.',
+      due_date: due,
+      priority: 'medium',
+      deal_id: dealId,
+    });
+    crm.log('Lost-deal cleanup for ' + title + ': ' + cancelled + ' task(s) cancelled.');
+    return { tasks_cancelled: cancelled, wrap_up_created: true };
+  },
+};`,
+    },
+  },
+  {
+    slug: 'company-rollup-digest',
+    name: 'Company pipeline rollups',
+    category: 'hygiene',
+    icon: '🧾',
+    summary:
+      'The numbers Salesforce admins buy rollup add-ons for: per-company open pipeline value, open-deal count, and days since last activity. Every day this computes them across your open deals and files one digest task showing the top ten accounts by open pipeline — quiet ones flagged — so account-level exposure is a glance, not a spreadsheet exercise. (The SDK has no custom-field write surface, so the rollups land as a digest rather than stamped fields.)',
+    tags: ['rollups', 'companies', 'digest'],
+    spec: {
+      name: 'company-rollup-digest',
+      summary: 'Daily digest task of per-company rollups over open deals: pipeline value, deal count, days since last activity.',
+      triggerEvent: 'schedule.daily',
+      triggerFilter: { cron: '0 8 * * 1-5' },
+      actions: [
+        { kind: 'create_task', title_template: 'Company pipeline rollups — {today}', due_in_days: 0 },
+      ],
+      source_code: `// Roll up open-deal value / count / recency per company into one digest.
+module.exports = {
+  async run({ crm }) {
+    var deals = await crm.listDeals({ status: 'open' });
+    var rollup = {};
+    for (var i = 0; i < deals.length; i++) {
+      var d = deals[i];
+      if (!d.company_id) continue;
+      var r = rollup[d.company_id] || (rollup[d.company_id] = { amount: 0, count: 0, last: 0 });
+      r.amount += Number(d.amount) || 0;
+      r.count++;
+      var t = new Date(d.last_activity_at || d.updated_at || d.created_at || 0).getTime();
+      if (t > r.last) r.last = t;
+    }
+    var ids = Object.keys(rollup);
+    if (ids.length === 0) {
+      crm.log('No open deals attached to companies — nothing to roll up.');
+      return { companies: 0 };
+    }
+    var companies = await crm.listCompanies({});
+    var nameById = {};
+    for (var j = 0; j < companies.length; j++) nameById[companies[j].id] = companies[j].name;
+    ids.sort(function (a, b) { return rollup[b].amount - rollup[a].amount; });
+    var now = Date.now();
+    var lines = ids.slice(0, 10).map(function (id) {
+      var r = rollup[id];
+      var quiet = r.last ? Math.floor((now - r.last) / 86400000) : null;
+      return '- ' + (nameById[id] || ('company #' + id)) + ': $' + Math.round(r.amount) +
+        ' across ' + r.count + ' deal(s), last activity ' +
+        (quiet === null ? 'unknown' : quiet + ' day(s) ago' + (quiet >= 30 ? ' — QUIET' : ''));
+    });
+    var today = new Date().toISOString().slice(0, 10);
+    await crm.createTask({
+      title: 'Company pipeline rollups — ' + today,
+      description: 'Open pipeline by account (top ' + Math.min(ids.length, 10) + ' of ' + ids.length + '):\\n' +
+        lines.join('\\n') +
+        '\\nBig exposure + long silence is the combination to act on first.',
+      due_date: today,
+      priority: 'low',
+    });
+    crm.log('Company rollups computed for ' + ids.length + ' account(s) across ' + deals.length + ' open deals.');
+    return { companies: ids.length, open_deals: deals.length };
+  },
+};`,
+    },
+  },
 ];

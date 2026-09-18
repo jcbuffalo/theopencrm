@@ -180,8 +180,16 @@ const SDK_METHODS = [
   'getContact', 'listContacts',
   'getCompany', 'listCompanies',
   'getTask', 'listTasks',
+  // module-object reads (2026-09 expansion; flag-gated per org inside the
+  // SDK — a disabled module degrades to [] / null + a run-log warning)
+  'getLead', 'listLeads',
+  'getCase', 'listCases',
+  'getQuote', 'listQuotes',
+  'getMeeting', 'listMeetings',
+  'listServiceContracts',
   // writes
   'updateDeal', 'updateContact', 'updateCompany', 'updateTask',
+  'updateLead', 'updateCase',
   'createTask',
 ];
 // AI bridge — bridged flat as __host_aiComplete like every other async
@@ -971,6 +979,7 @@ module.exports = {
     AI_CALL_WALL_CLOCK_EXTENSION_MS,
     MAX_TOTAL_WALL_CLOCK_MS,
     MAX_CONCURRENT_RUNS_PER_ORG,
+    SDK_METHODS,
     concurrentRunsByOrg,
     isSandboxAvailable: () => Boolean(ivm),
   },

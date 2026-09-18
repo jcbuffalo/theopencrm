@@ -582,6 +582,26 @@ router.put('/:id', validateBody(dealSchemas.updateSchema), async (req, res) => {
     const ownerErr = await recordOwnership.ownerValidationError(req, owner_user_id);
     if (ownerErr) return res.status(400).json({ error: ownerErr });
 
+    // deal.updated (plugin trigger): capture the before-row for the WATCHED
+    // field set (owner_user_id / amount / expected_close_date / stage) so the
+    // post-write hook can diff. Guarded on dispatchPossible() — the SELECT
+    // exists ONLY to build the event payload, so it's skipped entirely under
+    // the test bypass / kill switch (keeps ordered-mock route tests and the
+    // disabled-runtime hot path free of an extra query). Only fields this PUT
+    // can actually change matter: all four watched columns are COALESCE /
+    // `|| null` writes, so a null/absent body value can never change them.
+    let dealUpdatedPrev = null;
+    if (
+      req.orgId && pluginEvents.dispatchPossible() &&
+      (amount != null || expected_close_date != null || owner_user_id != null || stage != null)
+    ) {
+      const prevRes = await pool.query(
+        `SELECT amount, expected_close_date, owner_user_id, stage FROM deals WHERE id = $1 AND ${sf} = $2`,
+        [req.params.id, sv]
+      );
+      dealUpdatedPrev = prevRes.rows[0] || null;
+    }
+
     const result = await pool.query(
       `UPDATE deals SET
         title = COALESCE($1, title),
@@ -647,6 +667,14 @@ router.put('/:id', validateBody(dealSchemas.updateSchema), async (req, res) => {
           amount: result.rows[0].amount,
         }, { dedupeKey: `deal.stage_changed:${result.rows[0].id}:${previousStage}->${stage}` });
       }
+    }
+    // deal.updated (plugin trigger): fires when at least one NON-STAGE
+    // watched field changed (owner cascades, amount changes, close-date
+    // slips). The helper owns the diff, the stage-only suppression rule (a
+    // stage-only edit already fired deal.stage_changed above — never both
+    // for one logical change), and the per-edit dedupe key. Fire-and-forget.
+    if (req.orgId && dealUpdatedPrev) {
+      pluginEvents.emitDealUpdated(req.orgId, dealUpdatedPrev, result.rows[0]);
     }
     res.json(result.rows[0]);
   } catch (error) {

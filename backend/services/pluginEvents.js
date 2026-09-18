@@ -10,8 +10,8 @@
 // Before this module existed, plugins carried trigger_event /
 // trigger_filter_json but nothing ever dispatched an event: pluginRunner.run
 // was only reachable from the manual routes and the chat run_plugin tool.
-// emit() is the missing seam. Call sites (dealRoutes, contactRoutes,
-// companyRoutes, caseRoutes, quoteRoutes, services/leads.js,
+// emit() is the missing seam. Call sites (dealRoutes, taskRoutes,
+// contactRoutes, companyRoutes, caseRoutes, quoteRoutes, services/leads.js,
 // services/overdueTaskWorker.js, aiRoutes' confirm-first apply path) fire it
 // POST-COMMIT, best-effort — exactly the same posture as
 // webhookDispatcher.dispatch and the playbook stage-change hooks that
@@ -59,6 +59,13 @@
 //                                                via a different `from`,
 //                                                fires again)
 //     'task.overdue:<id>:<YYYY-MM-DD>'          (at most once per task-day)
+//     'task.completed:<id>:<YYYY-MM-DD>'        (a task re-opened and re-
+//                                                completed on a LATER day
+//                                                re-fires; same-day flapping
+//                                                dedupes as a correction)
+//     'deal.updated:<id>:<field:from->to,...>'  (retries of one edit dedupe;
+//                                                a new edit — different field
+//                                                or values — fires again)
 //     'schedule.daily:<YYYY-MM-DD>'             (once per plugin per UTC day)
 //     'schedule.hourly:<YYYY-MM-DDTHH>'         (once per plugin per UTC hour)
 //   If the claim query itself errors we FAIL CLOSED (skip the run) — dedupe
@@ -115,6 +122,30 @@ const PLUGIN_EVENTS = Object.freeze({
   // overdueTaskWorker, once per task per 24h notification window (dedupe key
   // adds the UTC date so a still-overdue task fires at most daily)
   TASK_OVERDUE: 'task.overdue',
+  // { id, title, deal_id, contact_id, assigned_to, completed_by } —
+  // PUT /api/tasks/:id when status TRANSITIONS into 'done' (the same
+  // vocabulary the recurrence spawn + overdueTaskWorker use; prior status
+  // 'done' → 'done' re-saves don't fire). Dedupe key adds the UTC completion
+  // date ('task.completed:<id>:<YYYY-MM-DD>'): a task re-opened and
+  // re-completed on a later day legitimately re-fires, while same-day
+  // complete→reopen→complete flapping dedupes as a correction. PATCH
+  // /api/tasks/bulk does NOT emit — completion side effects (recurrence
+  // spawn, assignment notifications) already belong to the per-row PUT only,
+  // and this event follows that precedent. Emitted via emitTaskCompleted().
+  TASK_COMPLETED: 'task.completed',
+  // { id, title, stage, deal_type, amount, owner_id, expected_close_date,
+  //   changed: [names], prev: {name: oldValue} } — PUT /api/deals/:id when at
+  // least one NON-STAGE watched field changed. Watched set (payload name →
+  // deals column): owner_id → owner_user_id, amount, expected_close_date,
+  // stage. ANTI-DOUBLE-TRIGGER RULE: a stage change already fires
+  // deal.stage_changed, so a stage-ONLY edit never fires deal.updated; when
+  // stage changed ALONGSIDE another watched field, deal.updated fires too and
+  // reports 'stage' in changed/prev. The confirm-first AI apply writer does
+  // NOT emit this event (it captures no before-row, so changed/prev — the
+  // whole point of the payload — would be unknowable there). Dedupe:
+  // 'deal.updated:<id>:<field:from->to,...>' — retries of the same edit
+  // dedupe, any new edit fires again. Emitted via emitDealUpdated().
+  DEAL_UPDATED: 'deal.updated',
   // { id, title, status, deal_id, customer_id, total_amount } — quoteRoutes:
   // PUT that transitions status to 'sent', or POST created directly as
   // 'sent'. Fires at most once per quote (dedupe 'quote.sent:<id>').
@@ -416,8 +447,139 @@ function emit(orgId, eventName, payload, opts = {}) {
   });
 }
 
+/**
+ * True when emit() could possibly dispatch (ENV-level gates only — the
+ * per-org plugins_enabled flag and the listener lookup still apply inside
+ * dispatch). Routes use this to skip a before-row capture query that exists
+ * ONLY to build an event payload (e.g. dealRoutes' deal.updated diff), so
+ * the hundreds of ordered-mock route tests — and the hot path under the
+ * kill switch — never pay for a SELECT whose result could not be delivered
+ * anyway.
+ */
+function dispatchPossible() {
+  if (process.env.NODE_ENV === 'test' && process.env.PLUGIN_EVENTS_IN_TESTS !== 'true') return false;
+  if (process.env.PLUGIN_RUNTIME_DISABLED === '1') return false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// task.completed — transition detection + payload/key construction live here
+// so the rule is unit-testable and every call site stays a one-liner.
+// ---------------------------------------------------------------------------
+
+/**
+ * Fire task.completed for a task row that a write just saved, IF that write
+ * was a completion (status transitioned into 'done'). Fire-and-forget like
+ * emit() — never throws, never blocks the calling write.
+ *
+ * Dedupe choice (documented in the module header + PLUGIN_EVENTS): the key is
+ * 'task.completed:<id>:<YYYY-MM-DD>' (UTC). A completion fires at most once
+ * per task per day — re-opening and re-completing the SAME day is treated as
+ * a correction (dedupes), while a re-complete on a later day is a new
+ * completion (re-fires).
+ *
+ * @param {number} orgId
+ * @param {object} task        — the post-write task row (id, title, status, …)
+ * @param {object} opts
+ * @param {string|null} opts.priorStatus — the task's status BEFORE the write
+ * @param {number|null} [opts.completedBy] — user id who performed the write
+ * @param {Date}   [opts.completedAt] — completion instant (default now; injectable for tests)
+ */
+function emitTaskCompleted(orgId, task, { priorStatus = null, completedBy = null, completedAt } = {}) {
+  if (!orgId || !task || task.status !== 'done' || priorStatus === 'done') {
+    return Promise.resolve({ dispatched: 0, skipped: 'not_a_completion' });
+  }
+  const day = (completedAt instanceof Date ? completedAt : new Date()).toISOString().slice(0, 10);
+  return emit(orgId, PLUGIN_EVENTS.TASK_COMPLETED, {
+    id: task.id,
+    title: task.title,
+    deal_id: task.deal_id != null ? task.deal_id : null,
+    contact_id: task.contact_id != null ? task.contact_id : null,
+    assigned_to: task.assigned_to != null ? task.assigned_to : null,
+    completed_by: completedBy != null ? completedBy : null,
+  }, { dedupeKey: `${PLUGIN_EVENTS.TASK_COMPLETED}:${task.id}:${day}` });
+}
+
+// ---------------------------------------------------------------------------
+// deal.updated — watched-field diff + the stage-only suppression rule.
+// ---------------------------------------------------------------------------
+
+// Watched field set (payload/filter name → deals column). Small and
+// recipe-oriented on purpose: owner cascades, amount changes, close-date
+// slips. Stage is watched for changed/prev REPORTING, but a stage-only edit
+// is suppressed — deal.stage_changed owns that trigger (see PLUGIN_EVENTS).
+const DEAL_UPDATED_WATCHED = Object.freeze({
+  owner_id: 'owner_user_id',
+  amount: 'amount',
+  expected_close_date: 'expected_close_date',
+  stage: 'stage',
+});
+
+// Comparable/serializable form of a watched value. Both sides of the diff
+// come from pg rows, so types agree (numeric → string, date → Date); Dates
+// normalize to 'YYYY-MM-DD' so the payload stays JSON-friendly.
+function normWatchedValue(v) {
+  if (v === null || v === undefined) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v);
+}
+
+/**
+ * Diff a deal's before/after rows over the watched set and fire deal.updated
+ * when at least one NON-STAGE watched field changed. Fire-and-forget like
+ * emit(). Call sites capture prevRow themselves (gated on dispatchPossible()
+ * so the extra SELECT never runs when dispatch can't happen).
+ *
+ * @param {number} orgId
+ * @param {object} prevRow — pre-write row with the watched columns
+ * @param {object} nextRow — the post-write deal row (RETURNING *)
+ */
+function emitDealUpdated(orgId, prevRow, nextRow) {
+  if (!orgId || !prevRow || !nextRow) {
+    return Promise.resolve({ dispatched: 0, skipped: 'no_diff_context' });
+  }
+  const changed = [];
+  const prev = {};
+  const summaryParts = [];
+  for (const [name, col] of Object.entries(DEAL_UPDATED_WATCHED)) {
+    const before = normWatchedValue(prevRow[col]);
+    const after = normWatchedValue(nextRow[col]);
+    if (before !== after) {
+      changed.push(name);
+      // Keep the pg-native prior value in the payload (dates normalized to
+      // 'YYYY-MM-DD' so the payload stays JSON-friendly).
+      prev[name] = prevRow[col] instanceof Date ? before : (prevRow[col] !== undefined ? prevRow[col] : null);
+      summaryParts.push(`${name}:${before}->${after}`);
+    }
+  }
+  if (changed.length === 0) {
+    return Promise.resolve({ dispatched: 0, skipped: 'no_watched_change' });
+  }
+  if (!changed.some((n) => n !== 'stage')) {
+    // Stage-only edit: deal.stage_changed already fired for it — firing
+    // deal.updated too would double-trigger one logical change.
+    return Promise.resolve({ dispatched: 0, skipped: 'stage_only' });
+  }
+  const summary = summaryParts.join(',');
+  return emit(orgId, PLUGIN_EVENTS.DEAL_UPDATED, {
+    id: nextRow.id,
+    title: nextRow.title,
+    stage: nextRow.stage,
+    deal_type: nextRow.deal_type,
+    amount: nextRow.amount,
+    owner_id: nextRow.owner_user_id != null ? nextRow.owner_user_id : null,
+    expected_close_date: normWatchedValue(nextRow.expected_close_date),
+    changed,
+    prev,
+  }, { dedupeKey: `${PLUGIN_EVENTS.DEAL_UPDATED}:${nextRow.id}:${summary}` });
+}
+
 module.exports = {
   emit,
+  emitTaskCompleted,
+  emitDealUpdated,
+  dispatchPossible,
+  DEAL_UPDATED_WATCHED,
   PLUGIN_EVENTS,
   SCHEDULE_EVENTS,
   matchesTriggerFilter,

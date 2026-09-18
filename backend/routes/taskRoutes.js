@@ -13,6 +13,9 @@ const notificationDispatcher = require('../services/notificationDispatcher');
 const recurringTasks = require('../services/recurringTasks');
 const { validateBody } = require('../middleware/validate');
 const taskSchemas = require('../schemas/tasks');
+// Plugin trigger engine (migration 164) — fire-and-forget post-commit event
+// dispatch to active plugins. emitTaskCompleted never throws / never blocks.
+const pluginEvents = require('../services/pluginEvents');
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -180,6 +183,22 @@ router.put('/:id', validateBody(taskSchemas.updateSchema), async (req, res) => {
     ) {
       notificationDispatcher.notifyTaskAssigned(updated.id)
         .catch(err => console.warn('notify_task_assigned_failed', err && err.message ? err.message : err));
+    }
+
+    // Plugin trigger (migration 164): task.completed fires on the SAME
+    // transition-into-'done' the recurrence spawn keys off above (prior
+    // status wasn't 'done'; re-saving an already-done task doesn't fire).
+    // The helper owns the transition check + the per-completion-day dedupe
+    // key ('task.completed:<id>:<YYYY-MM-DD>' — re-completed on a later day
+    // re-fires, same-day flapping dedupes). Fire-and-forget: never awaited,
+    // never fails the update. Bulk PATCH /bulk intentionally does NOT emit —
+    // completion side effects (recurrence spawn, assignment notifications)
+    // already fire from this per-row PUT only, and this event follows suit.
+    if (req.orgId) {
+      pluginEvents.emitTaskCompleted(req.orgId, updated, {
+        priorStatus,
+        completedBy: req.userId,
+      });
     }
 
     // Additive: clients that only know the task shape ignore the extra key;

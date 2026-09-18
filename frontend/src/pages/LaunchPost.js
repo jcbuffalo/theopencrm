@@ -63,7 +63,7 @@ export default function LaunchPost() {
             The front door is a chat copilot with 52 tools. It reads anything and
             proposes any write — and every write is confirm-first: you see exactly
             what will change and click Apply, or you don't. The same discipline
-            extends to the extension library: thirty one-click extensions (stale-deal
+            extends to the extension library: fifty-seven one-click extensions (stale-deal
             nudges, SLA timers, data-hygiene digests, AI pipeline briefs) that run on
             real event and schedule triggers, in a sandboxed VM with hard budgets, and
             only act autonomously if an admin explicitly opts a specific extension in.

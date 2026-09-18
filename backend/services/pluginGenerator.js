@@ -62,6 +62,7 @@ const FROM_PROMPT_SYSTEM = [
   '- Never invent SDK methods. If the user asks for something not in the allowlist (e.g. "send a Slack message"), pick the closest supported approach (e.g. createTask with a clear title) and mention the limitation in the description.',
   '- Keep it conservative: one trigger, one to three actions at most.',
   '- triggerEvent must be one of the listed values; if unclear, pick "manual".',
+  '- Module objects (leads, cases, quotes, meetings, service contracts) can be disabled per workspace: their crm.* reads then return an empty array (lists) or null (gets) instead of erroring. Write code that handles an empty result gracefully.',
   '- Use single quotes inside source_code so the JSON-encoding of the string stays clean.',
 ].join('\n');
 

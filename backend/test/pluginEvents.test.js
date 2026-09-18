@@ -296,3 +296,173 @@ describe('trigger outcome bookkeeping', () => {
     expect(updates.some((u) => /last_triggered_at = NOW\(\)/i.test(u.text))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// dispatchPossible — the env-level gate routes use to skip payload-only
+// before-row capture queries (dealRoutes' deal.updated diff SELECT).
+// ---------------------------------------------------------------------------
+describe('dispatchPossible', () => {
+  test('mirrors the env-level dispatch gates', () => {
+    expect(pluginEvents.dispatchPossible()).toBe(true); // suite opted in
+    process.env.PLUGIN_RUNTIME_DISABLED = '1';
+    expect(pluginEvents.dispatchPossible()).toBe(false);
+    delete process.env.PLUGIN_RUNTIME_DISABLED;
+    delete process.env.PLUGIN_EVENTS_IN_TESTS;
+    try {
+      expect(pluginEvents.dispatchPossible()).toBe(false); // test bypass
+    } finally {
+      process.env.PLUGIN_EVENTS_IN_TESTS = 'true';
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// emitTaskCompleted — task.completed hook logic (transition detection +
+// per-completion-day dedupe). Wired from PUT /api/tasks/:id.
+// ---------------------------------------------------------------------------
+describe('emitTaskCompleted', () => {
+  const doneTask = { id: 5, title: 'Call Sam', status: 'done', deal_id: 9, contact_id: 3, assigned_to: 12 };
+
+  test('fires on a transition into done with the recipe payload and a per-day dedupe key', async () => {
+    const r = await pluginEvents.emitTaskCompleted(ORG, doneTask, {
+      priorStatus: 'open', completedBy: 44, completedAt: new Date('2026-09-18T10:00:00Z'),
+    });
+    expect(r.dispatched).toBe(1);
+    const args = pluginRunner.run.mock.calls[0][0];
+    expect(args.triggerSource).toBe('task.completed');
+    expect(args.input.trigger).toEqual({
+      event: 'task.completed', id: 5, title: 'Call Sam',
+      deal_id: 9, contact_id: 3, assigned_to: 12, completed_by: 44,
+    });
+    const claim = mockPool.query.mock.calls.find(([sql]) => /plugin_trigger_dedupe/i.test(String(sql)));
+    expect(claim[1][1]).toBe('task.completed:5:2026-09-18');
+  });
+
+  test('same-day re-complete dedupes as a correction; a later-day re-complete re-fires', async () => {
+    const first = await pluginEvents.emitTaskCompleted(ORG, doneTask,
+      { priorStatus: 'open', completedAt: new Date('2026-09-18T08:00:00Z') });
+    // re-opened and re-completed within the SAME UTC day → dedupes
+    const flap = await pluginEvents.emitTaskCompleted(ORG, doneTask,
+      { priorStatus: 'open', completedAt: new Date('2026-09-18T17:00:00Z') });
+    // re-completed the NEXT day → a new completion, fires again
+    const nextDay = await pluginEvents.emitTaskCompleted(ORG, doneTask,
+      { priorStatus: 'open', completedAt: new Date('2026-09-19T09:00:00Z') });
+    expect(first.dispatched).toBe(1);
+    expect(flap.dispatched).toBe(0);
+    expect(nextDay.dispatched).toBe(1);
+    expect(pluginRunner.run).toHaveBeenCalledTimes(2);
+  });
+
+  test('non-completion writes never fire', async () => {
+    // a status change that is not into 'done'
+    expect((await pluginEvents.emitTaskCompleted(ORG, { ...doneTask, status: 'in_progress' }, { priorStatus: 'open' })).skipped)
+      .toBe('not_a_completion');
+    // re-saving an already-done task (prior status was already 'done')
+    expect((await pluginEvents.emitTaskCompleted(ORG, doneTask, { priorStatus: 'done' })).skipped)
+      .toBe('not_a_completion');
+    // org-less user — no plugins to dispatch to
+    expect((await pluginEvents.emitTaskCompleted(null, doneTask, { priorStatus: 'open' })).skipped)
+      .toBe('not_a_completion');
+    expect(pluginRunner.run).not.toHaveBeenCalled();
+    expect(mockPool.query).not.toHaveBeenCalled();
+  });
+
+  test('NEVER fails the calling write', async () => {
+    mockPool.query.mockRejectedValue(new Error('db exploded'));
+    featureFlags.hasFeature.mockRejectedValue(new Error('flags exploded'));
+    await expect(pluginEvents.emitTaskCompleted(ORG, doneTask, { priorStatus: 'open' }))
+      .resolves.toMatchObject({ dispatched: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// emitDealUpdated — deal.updated hook logic (watched-field diff, the
+// stage-only suppression rule, per-edit dedupe). Wired from PUT /api/deals/:id.
+// ---------------------------------------------------------------------------
+describe('emitDealUpdated', () => {
+  // Before/after rows carry pg-native types: numeric → string, date → Date.
+  const prevRow = {
+    amount: '5000.00',
+    expected_close_date: new Date('2026-10-01T00:00:00Z'),
+    owner_user_id: 3,
+    stage: 'lead',
+  };
+  const nextBase = {
+    id: 42, title: 'Big deal', stage: 'lead', deal_type: 'default',
+    amount: '5000.00', expected_close_date: new Date('2026-10-01T00:00:00Z'), owner_user_id: 3,
+  };
+
+  test('fires on a watched-field change with changed + prev over the watched set', async () => {
+    const next = { ...nextBase, amount: '8000.00', owner_user_id: 4 };
+    const r = await pluginEvents.emitDealUpdated(ORG, prevRow, next);
+    expect(r.dispatched).toBe(1);
+    const trigger = pluginRunner.run.mock.calls[0][0].input.trigger;
+    expect(trigger).toEqual({
+      event: 'deal.updated', id: 42, title: 'Big deal', stage: 'lead', deal_type: 'default',
+      amount: '8000.00', owner_id: 4, expected_close_date: '2026-10-01',
+      changed: ['owner_id', 'amount'],
+      prev: { owner_id: 3, amount: '5000.00' },
+    });
+    const claim = mockPool.query.mock.calls.find(([sql]) => /plugin_trigger_dedupe/i.test(String(sql)));
+    expect(claim[1][1]).toBe('deal.updated:42:owner_id:3->4,amount:5000.00->8000.00');
+  });
+
+  test('a close-date slip fires with normalized YYYY-MM-DD values', async () => {
+    const next = { ...nextBase, expected_close_date: new Date('2026-12-15T00:00:00Z') };
+    const r = await pluginEvents.emitDealUpdated(ORG, prevRow, next);
+    expect(r.dispatched).toBe(1);
+    const trigger = pluginRunner.run.mock.calls[0][0].input.trigger;
+    expect(trigger.changed).toEqual(['expected_close_date']);
+    expect(trigger.prev).toEqual({ expected_close_date: '2026-10-01' });
+    expect(trigger.expected_close_date).toBe('2026-12-15');
+  });
+
+  test('a stage-only change does NOT fire (deal.stage_changed owns it)', async () => {
+    const next = { ...nextBase, stage: 'qualified' };
+    const r = await pluginEvents.emitDealUpdated(ORG, prevRow, next);
+    expect(r.skipped).toBe('stage_only');
+    expect(pluginRunner.run).not.toHaveBeenCalled();
+  });
+
+  test('a stage change ALONGSIDE another watched field fires, reporting stage in changed/prev', async () => {
+    const next = { ...nextBase, stage: 'qualified', amount: '9000.00' };
+    const r = await pluginEvents.emitDealUpdated(ORG, prevRow, next);
+    expect(r.dispatched).toBe(1);
+    const trigger = pluginRunner.run.mock.calls[0][0].input.trigger;
+    expect(trigger.changed).toEqual(['amount', 'stage']);
+    expect(trigger.prev).toEqual({ amount: '5000.00', stage: 'lead' });
+  });
+
+  test('an unwatched-field-only change does not fire', async () => {
+    // title changed, watched set identical
+    const r = await pluginEvents.emitDealUpdated(ORG, prevRow, { ...nextBase, title: 'Renamed deal' });
+    expect(r.skipped).toBe('no_watched_change');
+    expect(pluginRunner.run).not.toHaveBeenCalled();
+    expect(mockPool.query).not.toHaveBeenCalled();
+  });
+
+  test('dedupe: a retried identical edit dedupes, a NEW edit fires again', async () => {
+    const next = { ...nextBase, amount: '8000.00' };
+    const first = await pluginEvents.emitDealUpdated(ORG, prevRow, next);
+    const retry = await pluginEvents.emitDealUpdated(ORG, prevRow, next);
+    expect(first.dispatched).toBe(1);
+    expect(retry.dispatched).toBe(0);
+    // a different edit (new from->to) fires again
+    const later = await pluginEvents.emitDealUpdated(ORG, { ...prevRow, amount: '8000.00' }, { ...nextBase, amount: '9500.00' });
+    expect(later.dispatched).toBe(1);
+    expect(pluginRunner.run).toHaveBeenCalledTimes(2);
+  });
+
+  test('missing diff context is a no-op', async () => {
+    expect((await pluginEvents.emitDealUpdated(ORG, null, nextBase)).skipped).toBe('no_diff_context');
+    expect((await pluginEvents.emitDealUpdated(null, prevRow, nextBase)).skipped).toBe('no_diff_context');
+    expect(pluginRunner.run).not.toHaveBeenCalled();
+  });
+
+  test('NEVER fails the calling write', async () => {
+    mockPool.query.mockRejectedValue(new Error('db exploded'));
+    featureFlags.hasFeature.mockRejectedValue(new Error('flags exploded'));
+    await expect(pluginEvents.emitDealUpdated(ORG, prevRow, { ...nextBase, amount: '8000.00' }))
+      .resolves.toMatchObject({ dispatched: 0 });
+  });
+});
