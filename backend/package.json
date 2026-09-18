@@ -1,0 +1,63 @@
+{
+  "name": "lightweight-crm-backend",
+  "version": "1.0.0",
+  "description": "Lightweight CRM with contact, deal, and activity management",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "migrate": "node migrations/migrate.js",
+    "migrate:create": "node migrations/create-migration.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:legacy": "node --test tests/auth.test.js tests/envValidation.test.js"
+  },
+  "keywords": [
+    "crm",
+    "express",
+    "postgresql",
+    "sales",
+    "contacts"
+  ],
+  "author": "",
+  "license": "AGPL-3.0-or-later",
+  "dependencies": {
+    "@google-cloud/storage": "^7.19.0",
+    "axios": "^1.16.1",
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "csrf-csrf": "^3.0.6",
+    "csv-parse": "^5.5.6",
+    "dotenv": "^16.0.3",
+    "express": "^4.22.2",
+    "express-rate-limit": "^8.3.1",
+    "google-auth-library": "^9.0.0",
+    "googleapis": "^144.0.0",
+    "html-to-text": "^9.0.5",
+    "mammoth": "^1.8.0",
+    "pdf-parse": "^1.1.1",
+    "helmet": "^8.1.0",
+    "isolated-vm": "^6.1.2",
+    "jsonwebtoken": "^9.0.0",
+    "multer": "^1.4.5-lts.1",
+    "nodemailer": "^8.0.7",
+    "pdfkit": "^0.15.0",
+    "pg": "^8.20.0",
+    "qrcode": "^1.5.4",
+    "speakeasy": "^2.0.0",
+    "stripe": "^22.1.1",
+    "twilio": "^6.0.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^2.1.9",
+    "nodemon": "^2.0.20",
+    "supertest": "^7.2.2",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

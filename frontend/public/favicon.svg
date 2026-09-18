@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- The Open CRM mark: two interlocking C arcs.
+       Royal blue ring (left C, opens to the right) + mint ring (right C, opens to the left). -->
+  <defs>
+    <linearGradient id="blueG" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2076CD"/>
+      <stop offset="100%" stop-color="#1B5FAD"/>
+    </linearGradient>
+    <linearGradient id="mintG" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#80CE99"/>
+      <stop offset="100%" stop-color="#5DB97D"/>
+    </linearGradient>
+  </defs>
+  <!-- Left C (blue) -->
+  <path d="M 38 14 A 18 18 0 1 0 38 50" stroke="url(#blueG)" stroke-width="6.5" stroke-linecap="round" fill="none"/>
+  <!-- Right C (mint) overlapping/interlocked -->
+  <path d="M 26 14 A 18 18 0 1 1 26 50" stroke="url(#mintG)" stroke-width="6.5" stroke-linecap="round" fill="none"/>
+</svg>

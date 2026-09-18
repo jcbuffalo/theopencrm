@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Allow: /privacy
+Allow: /terms
+Allow: /data-deletion
+Disallow: /api/
+Disallow: /admin/
+
+Sitemap: https://app.theopencrm.com/sitemap.xml

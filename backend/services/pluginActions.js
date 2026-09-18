@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 John Coles - The Open CRM
+// This file is part of The Open CRM, free software under the GNU AGPL v3.0 or
+// later. See the LICENSE file at the repository root, or
+// https://www.gnu.org/licenses/agpl-3.0.html. Distributed WITHOUT ANY WARRANTY.
+
+// Confirm-first apply layer for plugin-proposed writes.
+//
+// This is the plugin analogue of services/chatActions.js. A user-triggered
+// plugin run executes in the isolated-vm sandbox in DRY-RUN mode: its
+// crm.update* / crm.createTask calls DO NOT write — they record proposals
+// (see services/pluginSdk.js). The proposals are persisted on the plugin_runs
+// row. The ONLY writer is POST /api/plugins/:id/apply, which:
+//   1. loads the run's proposed_actions SERVER-SIDE (never trusts a client echo),
+//   2. RE-VALIDATES each proposal here against the SAME plugin write allowlist
+//      the sandbox uses (pluginSdk.sanitizePatch / normalizeTaskData), and
+//   3. executes them in one org-scoped transaction (applyProposal).
+//
+// SECURITY MODEL (mirrors chatActions.js):
+//   - Allowlist-only: sanitizePatch drops any field not in pluginSdk's
+//     UPDATE_ALLOWLISTS. A tampered stored proposal with an extra column is
+//     stripped on re-validation. org_id is NEVER a writable field.
+//   - Org-scoping: every UPDATE is `WHERE id = $target AND org_id = $orgId`, so
+//     a cross-org target can never be written even if the stored proposal named
+//     a foreign id. INSERTs bind org_id from the caller's scope, not the payload.
+//   - Referenced ids (contact_id / deal_id on a task) are ownership-checked
+//     against the caller's org before apply (see referencedIds()).
+//
+// WHY NOT literally import chatActions.applyAction? The plugin write surface is
+// a strict SUPERSET of chat's (chat can't updateContact/updateCompany/updateTask,
+// nor set deal.probability/owner_id/status/notes). Reusing chatActions would
+// silently DROP those proposals at apply time — a run would preview a change it
+// could never apply. So this module deliberately PARALLELS chatActions' proven
+// propose→re-validate→apply structure while sourcing its allowlist from the
+// already-reviewed pluginSdk surface (which mirrors routes/_bulkOps.js). No
+// widening, no narrowing of the existing plugin write surface.
+
+const pluginSdk = require('./pluginSdk');
+
+/**
+ * Pure re-validation of a single stored proposal (no DB). Returns
+ * { ok, errors:[], action } where `action` is the normalized, allowlist-scrubbed
+ * { entity, op, table, target_id?, fields }.
+ */
+function validateProposal(raw) {
+  const errors = [];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, errors: ['proposal must be an object'] };
+  }
+  const { entity, op } = raw;
+  const expectedTable = pluginSdk.TABLE_BY_ENTITY[entity];
+  if (!expectedTable) {
+    return { ok: false, errors: [`unknown or unsupported entity: ${entity}`] };
+  }
+  // If a table was stored, it must agree with the entity — defense against a
+  // proposal whose entity/table were tampered to disagree.
+  if (raw.table && raw.table !== expectedTable) {
+    return { ok: false, errors: [`entity/table mismatch: ${entity} vs ${raw.table}`] };
+  }
+
+  if (op === 'update') {
+    const nid = Number(raw.target_id);
+    if (!Number.isInteger(nid) || nid <= 0) {
+      errors.push('update requires a positive integer target_id');
+    }
+    let clean = null;
+    try {
+      // sanitizePatch throws if NO allowlisted field survives — that's the
+      // right behavior: an update with nothing writable is rejected.
+      clean = pluginSdk.sanitizePatch(raw.fields || {}, expectedTable);
+    } catch (e) {
+      errors.push(e.message);
+    }
+    if (errors.length) return { ok: false, errors };
+    return {
+      ok: true,
+      errors: [],
+      action: { entity, op: 'update', table: expectedTable, target_id: nid, fields: clean },
+    };
+  }
+
+  if (op === 'create') {
+    // Create is only exposed for tasks (mirrors pluginSdk — deals/contacts/
+    // companies creation is intentionally NOT a plugin capability).
+    if (expectedTable !== 'tasks') {
+      return { ok: false, errors: [`create is only supported for tasks, not ${entity}`] };
+    }
+    let fields;
+    try {
+      fields = pluginSdk.normalizeTaskData(raw.fields || {});
+    } catch (e) {
+      return { ok: false, errors: [e.message] };
+    }
+    return {
+      ok: true,
+      errors: [],
+      action: { entity: 'task', op: 'create', table: 'tasks', fields },
+    };
+  }
+
+  return { ok: false, errors: [`unsupported op: ${op}`] };
+}
+
+/**
+ * Collect the *_id references in an action that must be ownership-checked
+ * against the caller's org before apply. Same contract as
+ * chatActions.referencedIds.
+ */
+function referencedIds(action) {
+  const out = [];
+  if (action.op === 'create' && action.table === 'tasks') {
+    if (action.fields.contact_id) out.push({ field: 'contact_id', table: 'contacts', id: action.fields.contact_id });
+    if (action.fields.deal_id) out.push({ field: 'deal_id', table: 'deals', id: action.fields.deal_id });
+  }
+  return out;
+}
+
+/**
+ * Execute a validated proposal inside an open pg client/transaction.
+ * `scope` = { orgId, userId }. Every write is org-scoped so a cross-org target
+ * cannot be written. Returns the affected row, or null when the scoped WHERE
+ * matched nothing (caller should treat as 404 / skipped).
+ */
+async function applyProposal(client, action, scope) {
+  const { orgId, userId } = scope;
+  if (!Number.isInteger(orgId) || orgId <= 0) {
+    throw new Error('applyProposal: orgId is required');
+  }
+
+  if (action.op === 'update') {
+    const f = action.fields;
+    const keys = Object.keys(f);
+    const setSql = keys.map((k, i) => `${k} = $${i + 1}`).join(', ');
+    const params = keys.map((k) => f[k]);
+    params.push(action.target_id); const idIdx = params.length;
+    params.push(orgId); const scopeIdx = params.length;
+    const r = await client.query(
+      `UPDATE ${action.table} SET ${setSql}, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $${idIdx} AND org_id = $${scopeIdx} RETURNING *`,
+      params
+    );
+    return r.rows[0] || null;
+  }
+
+  // create task — org_id + user_id bound from the caller's scope, NOT the
+  // payload. contact_id / deal_id were ownership-checked by the caller.
+  const f = action.fields;
+  const r = await client.query(
+    `INSERT INTO tasks (org_id, user_id, contact_id, deal_id, title, description, due_date, status, priority)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+    [orgId, userId || null, f.contact_id, f.deal_id, f.title, f.description, f.due_date, f.status, f.priority]
+  );
+  return r.rows[0] || null;
+}
+
+module.exports = { validateProposal, referencedIds, applyProposal };

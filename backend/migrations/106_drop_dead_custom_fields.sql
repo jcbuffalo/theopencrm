@@ -1,0 +1,31 @@
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+-- Copyright (C) 2026 John Coles - The Open CRM
+-- This file is part of The Open CRM, free software under the GNU AGPL v3.0 or
+-- later. See the LICENSE file at the repository root, or
+-- https://www.gnu.org/licenses/agpl-3.0.html. Distributed WITHOUT ANY WARRANTY.
+
+-- 106_drop_dead_custom_fields.sql
+-- DB-integrity debt: migration 022 created a standalone `custom_fields` table
+-- (EAV-style: user_id / object_type / object_id / field_name / field_type /
+-- field_value). It has been fully superseded by the migration 070 approach —
+-- `org_field_definitions` (schema/registry) plus a per-entity `custom_fields`
+-- JSONB COLUMN on companies/contacts/deals/tasks.
+--
+-- Verification performed before dropping (2026-07):
+--   * Grepped the entire backend for `custom_fields`. Every hit is the JSONB
+--     COLUMN or the string "custom_fields" (route bodies, zod schemas,
+--     org_field_definitions plumbing, intel-writeback denylist) — NOT the
+--     022 table.
+--   * Grepped specifically for table-shaped usage
+--     (FROM|INTO|UPDATE|JOIN|DELETE FROM|REFERENCES <ws> custom_fields):
+--     ZERO matches in code and in every other migration. Nothing references
+--     the standalone table and no FK/view depends on it.
+--
+-- Because the 022 table is genuinely dead and has no dependents, drop it.
+-- Plain DROP TABLE IF EXISTS (NOT CASCADE): IF EXISTS keeps re-runs a clean
+-- no-op; omitting CASCADE means that if some unexpected dependent DOES exist,
+-- Postgres refuses the drop (surfacing it for investigation) rather than
+-- silently cascading. The JSONB `custom_fields` COLUMN on other tables is a
+-- column, not this table, and is untouched by DROP TABLE.
+
+DROP TABLE IF EXISTS custom_fields;

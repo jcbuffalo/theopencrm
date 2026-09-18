@@ -1,0 +1,246 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 John Coles - The Open CRM
+// This file is part of The Open CRM, free software under the GNU AGPL v3.0 or
+// later. See the LICENSE file at the repository root, or
+// https://www.gnu.org/licenses/agpl-3.0.html. Distributed WITHOUT ANY WARRANTY.
+
+// My Day — the personal relationship work-queue behind GET /api/my-day.
+//
+// One aggregated payload answering "what needs me today?":
+//   • tasksDue             — MY open tasks due today or overdue (soonest first)
+//   • renewals             — service contracts renewing in the next 30 days
+//   • atRiskAccounts       — customer accounts with lifecycle_stage = 'at_risk'
+//   • quietAccounts        — customer accounts with no touch in > 30 days
+//   • dealsNeedingAttention — open deals past their expected close date or with
+//                             no activity in > 14 days
+//   • has_data             — { deals, contacts, companies } row counts so the
+//                             Chat front door can pick its empty state without
+//                             fetching the full lists (null if the count fails)
+//
+// Scoping: every query is org-scoped via qs(req) → [sf, sv]. tasksDue is
+// ADDITIONALLY user-scoped — a task counts as "mine" when it's assigned to me,
+// or unassigned but created by me (assigned_to IS NULL AND user_id = me).
+//
+// Resilience: each section runs inside its own try/catch and degrades to []
+// on failure, so an org without the customer-success tables (or any single
+// broken source) still gets a 200 with the sections that DID load. This is a
+// core surface — deliberately NOT feature-gated at the mount.
+
+const express = require('express');
+const { authMiddleware } = require('../auth');
+const pool = require('../db');
+
+const router = express.Router();
+router.use(authMiddleware);
+
+// Returns [scopeField, scopeValue] for the current request's tenancy.
+// Falls back to user_id when the user doesn't belong to an org.
+function qs(req) { return req.orgId ? ['org_id', req.orgId] : ['user_id', req.userId]; }
+
+// Statuses that mean a task no longer needs anyone. Mirrors the open-task
+// filter used by the Account 360 header rollup (routes/accountRoutes.js).
+const TASK_DONE_STATUSES = ['done', 'completed', 'cancelled'];
+
+// Stages that mean a deal already reached an outcome. Mirrors CLOSED_STAGES in
+// routes/dealRoutes.js — covers the generic pipeline AND the Zang lifecycle.
+const CLOSED_DEAL_STAGES = [
+  'CLOSED_WON', 'CLOSED_LOST', 'closed_won', 'closed_lost',
+  'CLOSED', 'CLOSED_PAID', 'LOST',
+];
+
+const DAY_MS = 86400000;
+function daysSince(ts, now) {
+  if (!ts) return null;
+  const t = new Date(ts).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.floor((now.getTime() - t) / DAY_MS);
+}
+
+// Run one section's loader; degrade to [] on ANY failure so a single missing
+// table / broken source never turns the whole work-queue into a 500.
+async function section(name, req, loader) {
+  try {
+    return await loader();
+  } catch (error) {
+    if (req.log) req.log.warn('my_day_section_failed', { section: name, error: error.message });
+    else console.warn(`My Day section "${name}" failed:`, error.message);
+    return [];
+  }
+}
+
+router.get('/', async (req, res) => {
+  try {
+    const [sf, sv] = qs(req);
+    const now = new Date();
+
+    // 1. My open tasks due today or overdue — soonest (most overdue) first.
+    const tasksDue = await section('tasksDue', req, async () => {
+      const r = await pool.query(
+        `SELECT t.id, t.title, t.description, t.due_date, t.status, t.priority,
+                t.deal_id, t.contact_id,
+                d.title AS deal_title,
+                CASE WHEN c.id IS NOT NULL THEN c.first_name || ' ' || c.last_name END AS contact_name
+           FROM tasks t
+           LEFT JOIN deals d    ON t.deal_id = d.id
+           LEFT JOIN contacts c ON t.contact_id = c.id
+          WHERE t.${sf} = $1
+            AND (t.assigned_to = $2 OR (t.assigned_to IS NULL AND t.user_id = $2))
+            AND t.due_date IS NOT NULL AND t.due_date <= CURRENT_DATE
+            AND LOWER(COALESCE(t.status, 'open')) NOT IN ('done', 'completed', 'cancelled')
+          ORDER BY t.due_date ASC, t.created_at ASC
+          LIMIT 25`,
+        [sv, req.userId]
+      );
+      return r.rows.map((t) => ({
+        ...t,
+        overdue_days: Math.max(0, daysSince(t.due_date, now) ?? 0),
+      }));
+    });
+
+    // 2. Service contracts renewing inside 30 days. Same shape as the renewals
+    //    surface (routes/serviceContractRoutes.js). Missing table → [].
+    const renewals = await section('renewals', req, async () => {
+      const r = await pool.query(
+        `SELECT sc.id, sc.name, sc.customer_id, sc.end_date, sc.status,
+                sc.monthly_amount,
+                (sc.end_date - CURRENT_DATE) AS days_to_end,
+                c.name AS customer_name
+           FROM service_contracts sc
+           LEFT JOIN companies c ON sc.customer_id = c.id AND c.${sf} = $1
+          WHERE sc.${sf} = $1
+            AND sc.status = 'active'
+            AND sc.end_date IS NOT NULL
+            AND sc.end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
+          ORDER BY sc.end_date ASC
+          LIMIT 25`,
+        [sv]
+      );
+      return r.rows;
+    });
+
+    // 3. At-risk accounts — the lifecycle_stage='at_risk' roster the Accounts
+    //    home also surfaces. lifecycle_stage may not exist on older DBs → [].
+    const atRiskAccounts = await section('atRiskAccounts', req, async () => {
+      const r = await pool.query(
+        `SELECT id, name, industry, status, lifecycle_stage
+           FROM companies
+          WHERE ${sf} = $1 AND type = 'customer' AND lifecycle_stage = 'at_risk'
+          ORDER BY name ASC
+          LIMIT 10`,
+        [sv]
+      );
+      return r.rows;
+    });
+
+    // 4. Gone-quiet accounts — same last-touch scope as the Accounts rollup
+    //    (activities against the account's deals OR its company's contacts),
+    //    quiet = no touch in > 30 days (never-touched counts as quiet).
+    //    Quietest (oldest / never touched) first.
+    const quietAccounts = await section('quietAccounts', req, async () => {
+      const r = await pool.query(
+        `SELECT c.id, c.name, c.industry, c.lifecycle_stage, lt.last_touch
+           FROM companies c
+           LEFT JOIN LATERAL (
+             SELECT MAX(COALESCE(a.activity_date, a.created_at)) AS last_touch
+               FROM activities a
+              WHERE a.${sf} = $1
+                AND ( a.deal_id    IN (SELECT id FROM deals    WHERE customer_id = c.id AND ${sf} = $1)
+                   OR a.contact_id IN (SELECT id FROM contacts WHERE company_id = c.id AND ${sf} = $1) )
+           ) lt ON TRUE
+          WHERE c.${sf} = $1 AND c.type = 'customer'
+            AND COALESCE(c.lifecycle_stage, 'active') <> 'churned'
+            AND (lt.last_touch IS NULL OR lt.last_touch < NOW() - INTERVAL '30 days')
+          ORDER BY lt.last_touch ASC NULLS FIRST, c.name ASC
+          LIMIT 10`,
+        [sv]
+      );
+      return r.rows.map((a) => ({
+        ...a,
+        days_since_last_touch: daysSince(a.last_touch, now),
+      }));
+    });
+
+    // 5. Open deals needing attention — past expected close date, or no
+    //    activity logged in > 14 days (including never). Most urgent first.
+    const dealsNeedingAttention = await section('dealsNeedingAttention', req, async () => {
+      const r = await pool.query(
+        `SELECT d.id, d.title, d.stage, d.phase, d.amount, d.expected_close_date,
+                co.name AS company_name,
+                cu.name AS customer_name,
+                la.last_activity
+           FROM deals d
+           LEFT JOIN companies co ON d.company_id  = co.id
+           LEFT JOIN companies cu ON d.customer_id = cu.id
+           LEFT JOIN LATERAL (
+             SELECT MAX(COALESCE(a.activity_date, a.created_at)) AS last_activity
+               FROM activities a
+              WHERE a.deal_id = d.id AND a.${sf} = $1
+           ) la ON TRUE
+          WHERE d.${sf} = $1
+            AND d.stage NOT IN (${CLOSED_DEAL_STAGES.map((s) => `'${s}'`).join(', ')})
+            AND (
+                 (d.expected_close_date IS NOT NULL AND d.expected_close_date < CURRENT_DATE)
+              OR la.last_activity IS NULL
+              OR la.last_activity < NOW() - INTERVAL '14 days'
+            )
+          ORDER BY d.expected_close_date ASC NULLS LAST, la.last_activity ASC NULLS FIRST
+          LIMIT 10`,
+        [sv]
+      );
+      return r.rows.map((d) => {
+        const closeDays = daysSince(d.expected_close_date, now);
+        return {
+          ...d,
+          past_close_date: closeDays != null && closeDays > 0,
+          days_since_last_activity: daysSince(d.last_activity, now),
+        };
+      });
+    });
+
+    // 6. Cheap "does this org have anything yet?" counts. One round-trip,
+    //    three indexed COUNTs, org-scoped like everything else. null (not [])
+    //    on failure so the client knows to fall back to its own detection.
+    let has_data = null;
+    try {
+      const r = await pool.query(
+        `SELECT (SELECT COUNT(*)::int FROM deals     WHERE ${sf} = $1) AS deals,
+                (SELECT COUNT(*)::int FROM contacts  WHERE ${sf} = $1) AS contacts,
+                (SELECT COUNT(*)::int FROM companies WHERE ${sf} = $1) AS companies`,
+        [sv]
+      );
+      const row = (r && r.rows && r.rows[0]) || {};
+      has_data = {
+        deals:     Number(row.deals)     || 0,
+        contacts:  Number(row.contacts)  || 0,
+        companies: Number(row.companies) || 0,
+      };
+    } catch (error) {
+      if (req.log) req.log.warn('my_day_section_failed', { section: 'has_data', error: error.message });
+      else console.warn('My Day section "has_data" failed:', error.message);
+    }
+
+    res.json({
+      tasksDue,
+      renewals,
+      atRiskAccounts,
+      quietAccounts,
+      dealsNeedingAttention,
+      has_data,
+      counts: {
+        tasksDue: tasksDue.length,
+        renewals: renewals.length,
+        atRiskAccounts: atRiskAccounts.length,
+        quietAccounts: quietAccounts.length,
+        dealsNeedingAttention: dealsNeedingAttention.length,
+        total: tasksDue.length + renewals.length + atRiskAccounts.length
+             + quietAccounts.length + dealsNeedingAttention.length,
+      },
+    });
+  } catch (error) {
+    if (req.log) req.log.error('my_day_failed', { error });
+    else console.error('My Day error:', error.message);
+    res.status(500).json({ error: 'Failed to fetch My Day' });
+  }
+});
+
+module.exports = router;

@@ -1,0 +1,82 @@
+# Dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Environment variables
+.env
+.env.local
+.env.production
+.env.yaml
+.env.*.yaml
+*.pem
+*.key
+
+# Build outputs
+build/
+dist/
+.next/
+out/
+coverage/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+.env
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Docker — DO NOT ignore the actual Dockerfiles. CI needs them in the
+# checkout to build the images. This line previously globally ignored
+# Dockerfile and broke `safe-deploy.sh both` from GitHub Actions because
+# `gcloud builds submit . --tag X` couldn't find the build context.
+.dockerignore
+
+# CI/CD
+.github/secrets
+.env.ci
+
+# Mirror of /legal created by safe-deploy.sh for the backend Docker build
+# context. Canonical source lives at /legal. Do not commit the mirror.
+backend/legal/
+
+# Playwright test artifacts — regenerated on every run, don't version them.
+# (~136 MB of these were previously committed; see repo-hygiene cleanup.)
+tests/playwright-artifacts/
+tests/playwright-report/
+test-results/
+# Live session cookies written by global-setup.js — a real auth token, never commit.
+tests/.auth/
+# Generated audit findings report — regenerated every run. The .*.json pattern
+# also catches one-off variants like MOBILE_TEST_FINDINGS.broken-build.json that
+# the spec sometimes drops for diagnostic snapshots.
+tests/MOBILE_TEST_FINDINGS.json
+tests/MOBILE_TEST_FINDINGS.*.json
+# Segments UI-review harness output — screenshots + axe findings, regenerated
+# on every `playwright test --config=playwright.segments.config.js` run.
+tests/segments-ui-artifacts/
+tests/segments-ui-findings.json
+
+# Claude Code background-agent git worktrees — created by the Agent tool when
+# isolation: "worktree" is used. Each agent gets a temp branch + checkout
+# under .claude/worktrees/agent-<id>/. Never commit; never push.
+.claude/worktrees/

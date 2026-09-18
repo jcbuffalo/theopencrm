@@ -1,0 +1,17 @@
+{
+  "name": "open-crm-mobile-tests",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:report": "playwright show-report",
+    "test:public": "playwright test --grep @public",
+    "test:auth": "playwright test --grep @auth"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.60.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.11.3"
+  }
+}

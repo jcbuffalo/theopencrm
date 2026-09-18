@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom styles */
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Design-system type baseline (Aug 2026, see DESIGN_SYSTEM.md).
+ *
+ * Unclassed body copy reads at 15px on tablet-and-up. This is set on <body>
+ * — NOT on <html> — deliberately: Tailwind's rem-based spacing, widths and
+ * text-* scale all derive from the root font-size, so changing <html> would
+ * silently shrink every layout by 1/16. Elements that carry an explicit
+ * text-xs / text-sm / text-base keep their exact pixel size; only inherited
+ * text moves. */
+@media (min-width: 768px) {
+  body {
+    font-size: 15px;
+  }
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Accessibility — focus-visible rings on interactive defaults.
+ *
+ * Goal: any <button>, <a>, <input>, <select>, or <textarea> that doesn't
+ * already define its own focus treatment shows a 2px brand-blue ring when
+ * keyboard-focused (NOT on mouse click, thanks to :focus-visible).
+ *
+ * Why a base layer instead of per-component? The audit found ~30 ad-hoc
+ * focus styles across the SPA, several missing rings entirely. Adding the
+ * default here means the floor goes up for every call site at once. Any
+ * component that wants a different ring (e.g. the Button primitive) wins
+ * via specificity since utility classes / inline focus-visible:* override
+ * these defaults.
+ */
+@layer base {
+  /* `outline` automatically follows the element's own border-radius in
+   * modern browsers, so we don't set a radius here — that lets Tailwind's
+   * rounded-md / rounded-lg / rounded-xl utility class win without us
+   * forcing a competing radius onto the focus ring.
+   */
+  button:focus-visible,
+  a:focus-visible,
+  [role='button']:focus-visible,
+  [role='link']:focus-visible {
+    outline: 2px solid #2076CD; /* brand-blue */
+    outline-offset: 2px;
+  }
+
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid #2076CD; /* brand-blue */
+    outline-offset: 1px;
+  }
+}

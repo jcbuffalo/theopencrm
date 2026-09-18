@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#2076CD" />
+    <!-- The title/description/canonical below are the DEFAULTS; server.js
+         swaps them per public route (see PUBLIC_META there). Keep the exact
+         strings in sync — the swap is a literal string replacement. -->
+    <title>The Open CRM — Open-Source CRM with an AI Copilot</title>
+    <meta name="description" content="The full open-source CRM with an AI copilot as the front door. Self-host free (AGPL-3.0) or hosted from $15/seat — no per-contact penalties, your data stays yours. Build what you need, skip the bloat." />
+    <link rel="canonical" href="https://app.theopencrm.com/" />
+    <meta property="og:site_name" content="The Open CRM" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="The Open CRM — Open-Source CRM with an AI Copilot" />
+    <meta property="og:description" content="Self-host free (AGPL-3.0) or hosted from $15/seat. No per-contact penalties. An AI copilot that actually does the work — pay-as-you-go or bring your own key." />
+    <meta property="og:url" content="https://app.theopencrm.com/" />
+    <meta property="og:image" content="https://app.theopencrm.com/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="The Open CRM — Open-Source CRM with an AI Copilot" />
+    <meta name="twitter:description" content="Self-host free (AGPL-3.0) or hosted from $15/seat. No per-contact penalties. An AI copilot that actually does the work." />
+    <meta name="twitter:image" content="https://app.theopencrm.com/og-image.png" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- iOS ignores SVG touch icons — PNG required (2026-09-17 basics audit) -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "The Open CRM",
+      "url": "https://app.theopencrm.com/",
+      "applicationCategory": "BusinessApplication",
+      "operatingSystem": "Web",
+      "description": "Open-source (AGPL-3.0) customer relationship management with a chat-first AI copilot: companies, contacts, multi-pipeline deals, quotes, automation, reporting, customer-success tooling, and a customer portal. Self-host free or use managed hosting.",
+      "offers": [
+        { "@type": "Offer", "name": "Self-hosted (open source)", "price": "0", "priceCurrency": "USD" },
+        { "@type": "Offer", "name": "Hosted Starter", "price": "15", "priceCurrency": "USD", "description": "Per seat per month" },
+        { "@type": "Offer", "name": "Hosted Pro", "price": "39", "priceCurrency": "USD", "description": "Per seat per month" }
+      ]
+    }
+    </script>
+  </head>
+  <body>
+    <noscript>
+      <div style="max-width:640px;margin:40px auto;padding:0 16px;font-family:system-ui,-apple-system,sans-serif;color:#111">
+        <strong>The Open CRM app needs JavaScript.</strong>
+        The summary below covers the basics; enable JavaScript to sign in or start a workspace.
+      </div>
+    </noscript>
+    <div id="root">
+      <!-- CRAWLABLE STATIC SHELL — what search engines, link previews, AI
+           answer engines, and no-JS visitors see. React replaces this on
+           hydration (createRoot().render() wipes #root children), so real
+           users see the full app. KEEP THIS IN SYNC with the positioning in
+           src/pages/Landing.js — this is the machine-readable mirror of it. -->
+      <div style="font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#111827;max-width:860px;margin:0 auto;padding:48px 20px;line-height:1.6">
+        <p style="display:inline-block;background:#e8f1fb;color:#2076CD;border-radius:999px;padding:4px 14px;font-size:13px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;margin:0 0 18px">Open Source · Self-Host Free · Hosted from $15</p>
+        <h1 style="font-size:2.4rem;font-weight:800;margin:0 0 14px;line-height:1.15">A full, open-source CRM with an AI copilot as the front door.</h1>
+        <p style="font-size:1.2rem;color:#374151;margin:0 0 28px">Run it yourself for $0, or let us host it from $15 a seat — a fraction of what HubSpot charges. AI on top, usage-based, or bring your own Anthropic key and pay no markup.</p>
+        <p style="margin:0 0 34px">
+          <a href="/request-access" style="background:#2076CD;color:#fff;text-decoration:none;border-radius:8px;padding:12px 26px;font-weight:600;display:inline-block;margin-right:12px">Get started free</a>
+          <a href="/login" style="color:#2076CD;text-decoration:underline;font-weight:600">Sign in</a>
+        </p>
+
+        <h2 style="font-size:1.35rem;font-weight:700;margin:0 0 12px">Why teams switch from HubSpot</h2>
+        <ul style="margin:0 0 30px;padding-left:22px">
+          <li style="margin-bottom:8px"><strong>Escape the tier.</strong> No per-contact storage penalties and no $90–100 seats for features nobody opens. Free tier, then $15 (Starter) or $39 (Pro) per seat.</li>
+          <li style="margin-bottom:8px"><strong>Own your data.</strong> The code is open source (AGPL-3.0) — self-host the whole platform, or use hosted with one-click full data export and GDPR tooling built in. No proprietary lock-in.</li>
+          <li style="margin-bottom:8px"><strong>Build what you need.</strong> REST API with personal access tokens, outbound webhooks, custom fields, editable multi-pipeline stages, an automation engine, and sandboxed plugins you can generate from a chat prompt.</li>
+          <li style="margin-bottom:8px"><strong>An AI copilot that does the work.</strong> A chat-first front door with 49 tools — create and update records, build reports and automations, run diagnostics — every write confirm-first. AI is pay-as-you-go, or bring your own key.</li>
+        </ul>
+
+        <h2 style="font-size:1.35rem;font-weight:700;margin:0 0 12px">What's in the core</h2>
+        <p style="margin:0 0 30px;color:#374151">Companies, contacts, and leads with capture forms · deals on editable multi-pipeline Kanban boards with line-item P&amp;L · quotes and a product catalog (CPQ) · tasks, meetings, and playbook checklists · email sequences · dashboards, custom reports, and forecasting · customer-success tooling (account 360, health scores, renewals, NPS) · a customer portal · HubSpot and Salesforce import presets for switchers.</p>
+
+        <h2 style="font-size:1.35rem;font-weight:700;margin:0 0 12px">Pricing</h2>
+        <p style="margin:0 0 34px;color:#374151"><strong>$0</strong> self-hosted (AGPL-3.0 open source) · <strong>Free tier</strong> hosted to start · <strong>$15</strong>/seat/month Starter · <strong>$39</strong>/seat/month Pro · AI usage metered pay-as-you-go with a monthly cap, or free with your own Anthropic API key.</p>
+
+        <p style="border-top:1px solid #e5e7eb;padding-top:18px;font-size:.9rem;color:#6b7280">
+          <a href="https://github.com/jcbuffalo/theopencrm" style="color:#2076CD;font-weight:600">Source on GitHub (AGPL-3.0)</a> · <a href="/terms" style="color:#6b7280">Terms</a> · <a href="/privacy" style="color:#6b7280">Privacy</a> · <a href="/data-deletion" style="color:#6b7280">Data deletion</a> · <a href="/pitch" style="color:#6b7280">Product tour</a>
+        </p>
+      </div>
+    </div>
+    <script type="module" src="/src/index.js"></script>
+  </body>
+</html>
