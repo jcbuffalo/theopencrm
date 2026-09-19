@@ -24,7 +24,7 @@ const PORT = process.env.PORT || 8080;
 // by robots.txt where sensitive and behind auth regardless.
 // ---------------------------------------------------------------------------
 const DEFAULT_TITLE = 'The Open CRM — Open-Source CRM with an AI Copilot';
-const DEFAULT_DESC = 'The full open-source CRM with an AI copilot as the front door. Self-host free (AGPL-3.0) or hosted from $15/seat — no per-contact penalties, your data stays yours. Build what you need, skip the bloat.';
+const DEFAULT_DESC = 'The open-source CRM that configures around how you sell. Describe your process; it proposes the pipeline, fields and follow-ups, and nothing changes until you approve. Self-host free (AGPL-3.0) or hosted from $15/seat.';
 const DEFAULT_CANONICAL = 'https://app.theopencrm.com/';
 
 const PUBLIC_META = {

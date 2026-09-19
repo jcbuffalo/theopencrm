@@ -1,0 +1,393 @@
+[
+  {
+    "slug": "b2b_sales",
+    "name": "B2B sales team",
+    "tagline": "Leads, qualification, proposals, a clean close.",
+    "vertical": "b2b_sales",
+    "description": "A straightforward business-to-business motion: inbound and outbound leads, a qualifying call, a priced proposal, a round of negotiation, then won or lost. Tracks where the lead came from and nudges the rep when a deal goes quiet.",
+    "config": {
+      "pipeline": {
+        "name": "Sales",
+        "stages": [
+          { "label": "New Lead", "desc": "Came in from the website, a referral, or outbound", "tone": "slate", "probability": 10 },
+          { "label": "Qualified", "desc": "Discovery call done; real need, budget, timeline", "tone": "blue", "probability": 30 },
+          { "label": "Proposal Sent", "desc": "Priced proposal in the customer's hands", "tone": "cyan", "probability": 55 },
+          { "label": "Negotiation", "desc": "Working through price and terms", "tone": "amber", "probability": 75 },
+          { "label": "Closed Won", "desc": "Signed", "tone": "green", "is_won": true, "probability": 100 },
+          { "label": "Closed Lost", "desc": "Went elsewhere or went quiet for good", "tone": "red", "is_lost": true, "probability": 0 }
+        ]
+      },
+      "fields": [
+        { "entity": "deals", "name": "lead_source", "label": "Lead source", "type": "select", "options": ["Website", "Referral", "Outbound", "Event", "Partner"], "why": "Where the lead came from." },
+        { "entity": "deals", "name": "decision_maker", "label": "Decision maker", "type": "text", "why": "Who actually signs." },
+        { "entity": "companies", "name": "company_size", "label": "Company size", "type": "select", "options": ["1-10", "11-50", "51-200", "201-1000", "1000+"], "why": "Segment accounts by headcount." }
+      ],
+      "automations": [
+        { "name": "Nudge on a quiet deal", "trigger": "deal_idle_days", "days": 14, "action": "create_task", "title": "Check in — no activity for two weeks", "priority": "medium", "why": "Two weeks of silence is where deals die." },
+        { "name": "Flag negotiations as hot", "trigger": "deal_stage_is", "stage": "Negotiation", "action": "set_hot_flag", "why": "Negotiation-stage deals get attention." }
+      ],
+      "views": [
+        { "entity": "deals", "name": "Proposals out", "filters": { "stage": "Proposal Sent" }, "why": "Everything waiting on a customer decision." }
+      ]
+    }
+  },
+  {
+    "slug": "saas",
+    "name": "SaaS / software",
+    "tagline": "Trials, demos, annual contracts, renewals.",
+    "vertical": "saas",
+    "description": "Software subscriptions sold on trials and demos: scope the seats, quote, clear security review and procurement on larger deals, close an annual contract, and track the renewal date from day one.",
+    "config": {
+      "pipeline": {
+        "name": "Subscription sales",
+        "stages": [
+          { "label": "Trial / Signup", "desc": "Self-serve trial started or demo requested", "tone": "slate", "probability": 10 },
+          { "label": "Demo Done", "desc": "Walked them through it; scoping seats and plan", "tone": "blue", "probability": 30 },
+          { "label": "Quote Sent", "desc": "Seat count and plan priced", "tone": "cyan", "probability": 50 },
+          { "label": "Security & Procurement", "desc": "Questionnaire, legal, vendor onboarding", "tone": "amber", "probability": 70 },
+          { "label": "Contract Signed", "desc": "Annual contract in place", "tone": "green", "is_won": true, "probability": 100 },
+          { "label": "Lost / Churned Trial", "desc": "Trial expired or chose another tool", "tone": "red", "is_lost": true, "probability": 0 }
+        ]
+      },
+      "fields": [
+        { "entity": "deals", "name": "seat_count", "label": "Seat count", "type": "number", "why": "Drives the quote." },
+        { "entity": "deals", "name": "plan_tier", "label": "Plan tier", "type": "select", "options": ["Starter", "Team", "Business", "Enterprise"], "why": "Which plan they are buying." },
+        { "entity": "deals", "name": "contract_value", "label": "Annual contract value", "type": "number", "why": "ACV, separate from any one-off services." },
+        { "entity": "companies", "name": "renewal_date", "label": "Renewal date", "type": "date", "why": "The date that matters after the sale." }
+      ],
+      "automations": [
+        { "name": "Security review stalling", "trigger": "deal_idle_days", "days": 10, "action": "create_task", "title": "Follow up on security / procurement review", "priority": "high", "why": "Ten quiet days in review means a blocker nobody surfaced." },
+        { "name": "Hot once quoted", "trigger": "deal_stage_is", "stage": "Quote Sent", "action": "set_hot_flag", "why": "Quoted deals are live money." }
+      ],
+      "views": [
+        { "entity": "deals", "name": "In security review", "filters": { "stage": "Security & Procurement" }, "why": "The stage that quietly eats quarters." }
+      ]
+    }
+  },
+  {
+    "slug": "professional_services",
+    "name": "Consulting / professional services",
+    "tagline": "Discovery, scoping, statements of work.",
+    "vertical": "professional_services",
+    "description": "A consulting firm's path from intro conversation to signed statement of work: discovery, a written scope with a fee, client review, signature. Tracks engagement value, start date, service line, and who referred the client.",
+    "config": {
+      "pipeline": {
+        "name": "Engagements",
+        "stages": [
+          { "label": "Intro", "desc": "First conversation, usually a referral", "tone": "slate", "probability": 10 },
+          { "label": "Discovery", "desc": "Understanding the problem before we price it", "tone": "blue", "probability": 30 },
+          { "label": "SOW Sent", "desc": "Scope and fee in writing", "tone": "cyan", "probability": 55 },
+          { "label": "Client Review", "desc": "Redlines, scope questions, budget approval", "tone": "amber", "probability": 75 },
+          { "label": "Signed", "desc": "Engagement is on", "tone": "green", "is_won": true, "probability": 100 },
+          { "label": "Passed", "desc": "Not now, or not a fit", "tone": "rose", "is_lost": true, "probability": 0 }
+        ]
+      },
+      "fields": [
+        { "entity": "deals", "name": "service_line", "label": "Service line", "type": "select", "options": ["Strategy", "Implementation", "Advisory retainer", "Training", "Other"], "why": "What kind of work it is." },
+        { "entity": "deals", "name": "estimated_start", "label": "Estimated start", "type": "date", "why": "Capacity planning." },
+        { "entity": "deals", "name": "referred_by", "label": "Referred by", "type": "text", "why": "Referrals are the whole funnel — know who to thank." }
+      ],
+      "automations": [
+        { "name": "SOW out for a week", "trigger": "deal_idle_days", "days": 7, "action": "create_task", "title": "Follow up on the SOW", "priority": "medium", "why": "A week of silence after a SOW needs a call, not another email." }
+      ],
+      "views": [
+        { "entity": "deals", "name": "SOWs awaiting signature", "filters": { "stage": "SOW Sent" }, "why": "Revenue that is one signature away." }
+      ]
+    }
+  },
+  {
+    "slug": "agency",
+    "name": "Marketing / creative agency",
+    "tagline": "Briefs, pitches, retainers and projects.",
+    "vertical": "agency",
+    "description": "An agency's new-business flow: a brief or introduction, a chemistry call, a pitch or proposal, then a project or a monthly retainer. Tracks project-vs-retainer, value, the service, and the pitch date; flags big pitches.",
+    "config": {
+      "pipeline": {
+        "name": "New business",
+        "stages": [
+          { "label": "Brief Received", "desc": "Inbound brief or a warm intro", "tone": "slate", "probability": 10 },
+          { "label": "Chemistry Call", "desc": "Do we like each other and can we do it", "tone": "blue", "probability": 25 },
+          { "label": "Pitch / Proposal", "desc": "Creative pitch or written proposal in progress", "tone": "cyan", "probability": 45 },
+          { "label": "Pitched", "desc": "Presented; waiting on the decision", "tone": "amber", "probability": 65 },
+          { "label": "Won", "desc": "Project or retainer signed", "tone": "green", "is_won": true, "probability": 100 },
+          { "label": "Lost", "desc": "Went to another shop or shelved", "tone": "red", "is_lost": true, "probability": 0 }
+        ]
+      },
+      "fields": [
+        { "entity": "deals", "name": "engagement_type", "label": "Engagement type", "type": "select", "options": ["Project", "Retainer"], "why": "One-off vs recurring changes everything about the number." },
+        { "entity": "deals", "name": "service", "label": "Service", "type": "select", "options": ["Brand", "Web", "Paid media", "Content", "Social", "Full service"], "why": "Which team does the work." },
+        { "entity": "deals", "name": "pitch_date", "label": "Pitch date", "type": "date", "why": "The day the team has to be ready." }
+      ],
+      "automations": [
+        { "name": "Flag big pitches", "trigger": "deal_stage_is", "stage": "Pitch / Proposal", "action": "set_hot_flag", "why": "Anything in pitch gets senior eyes." },
+        { "name": "Chase after the pitch", "trigger": "deal_idle_days", "days": 7, "action": "create_task", "title": "Follow up on the pitch decision", "priority": "medium", "why": "A week after pitching, ask." }
+      ],
+      "views": [
+        { "entity": "deals", "name": "Awaiting decision", "filters": { "stage": "Pitched" }, "why": "Pitched and waiting." }
+      ]
+    }
+  },
+  {
+    "slug": "recruiting",
+    "name": "Recruiting / staffing",
+    "tagline": "Client roles, candidates, placements.",
+    "vertical": "recruiting",
+    "description": "A recruiting agency working client roles: source, screen, submit a shortlist, run client interviews, extend the offer, make the placement. Each deal is a role; tracks fee, title, salary band, and contract vs permanent.",
+    "config": {
+      "pipeline": {
+        "name": "Roles",
+        "stages": [
+          { "label": "Role Opened", "desc": "Client gave us the role", "tone": "slate", "probability": 15 },
+          { "label": "Sourcing", "desc": "Building the candidate pool", "tone": "blue", "probability": 25 },
+          { "label": "Shortlist Submitted", "desc": "Candidates with the client", "tone": "cyan", "probability": 45 },
+          { "label": "Client Interviews", "desc": "Candidates interviewing", "tone": "amber", "probability": 65 },
+          { "label": "Offer Out", "desc": "Offer extended; negotiating", "tone": "orange", "probability": 85 },
+          { "label": "Placed", "desc": "Candidate started; fee invoiced", "tone": "green", "is_won": true, "probability": 100 },
+          { "label": "Role Closed / Lost", "desc": "Filled elsewhere or pulled", "tone": "red", "is_lost": true, "probability": 0 }
+        ]
+      },
+      "fields": [
+        { "entity": "deals", "name": "role_title", "label": "Role title", "type": "text", "why": "The job we are filling." },
+        { "entity": "deals", "name": "salary_range", "label": "Salary range", "type": "text", "why": "Sets candidate expectations and the fee." },
+        { "entity": "deals", "name": "placement_type", "label": "Placement type", "type": "select", "options": ["Permanent", "Contract", "Contract-to-hire"], "why": "Different fee model." },
+        { "entity": "contacts", "name": "candidate_status", "label": "Candidate status", "type": "select", "options": ["Sourced", "Screened", "Submitted", "Interviewing", "Offered", "Placed", "Passed"], "why": "Contacts double as candidates." }
+      ],
+      "automations": [
+        { "name": "Shortlist feedback overdue", "trigger": "deal_idle_days", "days": 5, "action": "create_task", "title": "Get client feedback on the shortlist", "priority": "high", "why": "Five days without feedback and your candidates take other offers." }
+      ],
+      "views": [
+        { "entity": "deals", "name": "Offers out", "filters": { "stage": "Offer Out" }, "why": "The roles closest to a fee." }
+      ]
+    }
+  },
+  {
+    "slug": "real_estate",
+    "name": "Commercial real estate",
+    "tagline": "Listings, showings, LOIs, closings.",
+    "vertical": "real_estate",
+    "description": "Brokering commercial property: inquiry, showings, letter of intent, lease or purchase negotiation, due diligence, closing. Tracks the property, square footage, lease vs sale, commission, and target close.",
+    "config": {
+      "pipeline": {
+        "name": "Deals",
+        "stages": [
+          { "label": "Inquiry", "desc": "Interest in a listing or a client we represent", "tone": "slate", "probability": 10 },
+          { "label": "Showings", "desc": "Touring space", "tone": "blue", "probability": 25 },
+          { "label": "LOI", "desc": "Letter of intent in play", "tone": "cyan", "probability": 45 },
+          { "label": "Negotiating Agreement", "desc": "Lease or purchase agreement redlines", "tone": "amber", "probability": 65 },
+          { "label": "Due Diligence", "desc": "Inspections, financing, title", "tone": "orange", "probability": 85 },
+          { "label": "Closed", "desc": "Signed and funded; commission earned", "tone": "green", "is_won": true, "probability": 100 },
+          { "label": "Fell Through", "desc": "Deal died", "tone": "red", "is_lost": true, "probability": 0 }
+        ]
+      },
+      "fields": [
+        { "entity": "deals", "name": "property_address", "label": "Property address", "type": "text", "why": "The asset." },
+        { "entity": "deals", "name": "square_footage", "label": "Square footage", "type": "number", "why": "Sizes the deal." },
+        { "entity": "deals", "name": "deal_kind", "label": "Lease or sale", "type": "select", "options": ["Lease", "Sale", "Sublease"], "why": "Different paperwork and commission math." },
+        { "entity": "deals", "name": "commission", "label": "Commission", "type": "number", "why": "What we actually earn." }
+      ],
+      "automations": [
+        { "name": "Due diligence stalled", "trigger": "deal_idle_days", "days": 14, "action": "create_task", "title": "Check in on due diligence progress", "priority": "high", "why": "Two quiet weeks in diligence usually means a financing or inspection problem." }
+      ],
+      "views": [
+        { "entity": "deals", "name": "Under LOI", "filters": { "stage": "LOI" }, "why": "Serious buyers and tenants." }
+      ]
+    }
+  },
+  {
+    "slug": "construction",
+    "name": "Construction / contracting",
+    "tagline": "Bids, estimates, awards, change orders.",
+    "vertical": "construction",
+    "description": "A contractor's bid pipeline: invitation or request, site visit, estimate, bid submitted, awarded or lost, then contract and mobilization. Tracks bid amount, due date, project type, the GC or owner, and the site.",
+    "config": {
+      "pipeline": {
+        "name": "Bids",
+        "stages": [
+          { "label": "Invitation to Bid", "desc": "Bid invite or client request received", "tone": "slate", "probability": 10 },
+          { "label": "Site Visit", "desc": "Walked the site; scoping", "tone": "blue", "probability": 25 },
+          { "label": "Estimating", "desc": "Building the number", "tone": "cyan", "probability": 40 },
+          { "label": "Bid Submitted", "desc": "Bid is in; waiting on award", "tone": "amber", "probability": 55 },
+          { "label": "Awarded — Contracting", "desc": "We won; contract and mobilization", "tone": "orange", "probability": 90 },
+          { "label": "Under Contract", "desc": "Signed; job is ours", "tone": "green", "is_won": true, "probability": 100 },
+          { "label": "Lost Bid", "desc": "Awarded to someone else or cancelled", "tone": "red", "is_lost": true, "probability": 0 }
+        ]
+      },
+      "fields": [
+        { "entity": "deals", "name": "bid_due_date", "label": "Bid due date", "type": "date", "why": "The date the estimator lives by." },
+        { "entity": "deals", "name": "project_type", "label": "Project type", "type": "select", "options": ["Commercial", "Residential", "Renovation", "Public works", "Industrial"], "why": "Different crews and margins." },
+        { "entity": "deals", "name": "site_address", "label": "Site address", "type": "text", "why": "Where the work is." },
+        { "entity": "companies", "name": "company_role", "label": "Role on projects", "type": "select", "options": ["General contractor", "Owner", "Architect", "Subcontractor", "Supplier"], "why": "Who they are to us on a job." }
+      ],
+      "automations": [
+        { "name": "Bid follow-up", "trigger": "deal_idle_days", "days": 10, "action": "create_task", "title": "Follow up on the submitted bid", "priority": "medium", "why": "Ten days after submitting, find out where it stands." },
+        { "name": "Awarded jobs are hot", "trigger": "deal_stage_is", "stage": "Awarded — Contracting", "action": "set_hot_flag", "why": "Won but not signed is the riskiest week." }
+      ],
+      "views": [
+        { "entity": "deals", "name": "Bids out", "filters": { "stage": "Bid Submitted" }, "why": "Everything waiting on an award." }
+      ]
+    }
+  },
+  {
+    "slug": "distribution",
+    "name": "Wholesale / distribution",
+    "tagline": "Account opening, quotes, orders, reorders.",
+    "vertical": "distribution",
+    "description": "Distributing product to business customers: new accounts from reps and trade shows, a price list or quote, a first order, then the real business — repeat orders. Tracks annual volume, category, territory, and terms; flags accounts that stop ordering.",
+    "config": {
+      "pipeline": {
+        "name": "Accounts",
+        "stages": [
+          { "label": "Prospect", "desc": "Met at a show or found by a rep", "tone": "slate", "probability": 10 },
+          { "label": "Qualified Account", "desc": "Right size, right products, credit looks fine", "tone": "blue", "probability": 30 },
+          { "label": "Quote / Price List Sent", "desc": "Pricing in their hands", "tone": "cyan", "probability": 50 },
+          { "label": "First Order", "desc": "Trial order placed", "tone": "amber", "probability": 80 },
+          { "label": "Active Account", "desc": "Reordering — this is the business", "tone": "green", "is_won": true, "probability": 100 },
+          { "label": "Lost / Inactive", "desc": "Never ordered or stopped", "tone": "red", "is_lost": true, "probability": 0 }
+        ]
+      },
+      "fields": [
+        { "entity": "deals", "name": "estimated_annual_volume", "label": "Estimated annual volume", "type": "number", "why": "What the account is worth per year." },
+        { "entity": "deals", "name": "product_category", "label": "Product category", "type": "text", "why": "What they buy." },
+        { "entity": "companies", "name": "territory", "label": "Territory", "type": "text", "why": "Which rep owns it." },
+        { "entity": "companies", "name": "payment_terms", "label": "Payment terms", "type": "select", "options": ["Prepay", "Net 15", "Net 30", "Net 60"], "why": "Credit exposure." }
+      ],
+      "automations": [
+        { "name": "Account gone quiet", "trigger": "deal_idle_days", "days": 60, "action": "create_task", "title": "Reach out — no order in 60 days", "priority": "medium", "why": "Sixty days without an order means someone else is supplying them." }
+      ],
+      "views": [
+        { "entity": "deals", "name": "Quotes out", "filters": { "stage": "Quote / Price List Sent" }, "why": "Pricing in play." }
+      ]
+    }
+  },
+  {
+    "slug": "equipment_sales",
+    "name": "Equipment dealer",
+    "tagline": "Demos, quotes, financing, delivery.",
+    "vertical": "equipment_sales",
+    "description": "Selling and leasing equipment: qualify need and budget, demo, quote with a financing option, negotiate trade-in and terms, close, then deliver and install. Tracks model, new vs used, financing status, and delivery date.",
+    "config": {
+      "pipeline": {
+        "name": "Equipment sales",
+        "stages": [
+          { "label": "Inquiry", "desc": "Asked about a machine", "tone": "slate", "probability": 10 },
+          { "label": "Qualified", "desc": "Real need, real budget, timeline", "tone": "blue", "probability": 30 },
+          { "label": "Demo Scheduled", "desc": "Seeing it run", "tone": "cyan", "probability": 45 },
+          { "label": "Quote Sent", "desc": "Priced, with financing option", "tone": "amber", "probability": 60 },
+          { "label": "Negotiating Terms", "desc": "Trade-in, financing, delivery", "tone": "orange", "probability": 80 },
+          { "label": "Sold — Delivery", "desc": "Paperwork done; scheduling delivery and install", "tone": "green", "is_won": true, "probability": 100 },
+          { "label": "Lost", "desc": "Bought elsewhere or deferred", "tone": "red", "is_lost": true, "probability": 0 }
+        ]
+      },
+      "fields": [
+        { "entity": "deals", "name": "equipment_model", "label": "Equipment model", "type": "text", "why": "What they are buying." },
+        { "entity": "deals", "name": "condition", "label": "New or used", "type": "select", "options": ["New", "Used", "Refurbished"], "why": "Margin and warranty differ." },
+        { "entity": "deals", "name": "financing_status", "label": "Financing status", "type": "select", "options": ["Cash", "Applied", "Approved", "Declined", "Lease"], "why": "Financing is where deals stall." },
+        { "entity": "deals", "name": "delivery_date", "label": "Delivery date", "type": "date", "why": "Install crew scheduling." }
+      ],
+      "automations": [
+        { "name": "Quote follow-up", "trigger": "deal_idle_days", "days": 10, "action": "create_task", "title": "Follow up on the open quote", "priority": "medium", "why": "Ten quiet days after a quote." }
+      ],
+      "views": [
+        { "entity": "deals", "name": "Open quotes", "filters": { "stage": "Quote Sent" }, "why": "Priced and waiting." }
+      ]
+    }
+  },
+  {
+    "slug": "manufacturer_rep",
+    "name": "Manufacturer's rep",
+    "tagline": "RFQs, vendor quotes, customer quotes, POs.",
+    "vertical": "manufacturer_rep",
+    "description": "A manufacturer's representative: triage the RFQ, get pricing from the lines you represent, build the customer quote, chase the PO, then track acknowledgement, shipment, and invoicing. Tracks RFQ number, vendor, commission rate, and requested ship date.",
+    "config": {
+      "pipeline": {
+        "name": "RFQ to PO",
+        "stages": [
+          { "label": "RFQ Received", "desc": "Customer sent a request for quote", "tone": "slate", "probability": 15 },
+          { "label": "Vendor Quoting", "desc": "Pricing requested from the manufacturer(s)", "tone": "blue", "probability": 30 },
+          { "label": "Customer Quote Sent", "desc": "Our quote is with the customer", "tone": "cyan", "probability": 50 },
+          { "label": "Follow Up", "desc": "Chasing the PO", "tone": "amber", "probability": 65 },
+          { "label": "PO Received", "desc": "Order placed with the vendor; tracking ack and ship", "tone": "orange", "probability": 95 },
+          { "label": "Shipped & Invoiced", "desc": "Done; commission due", "tone": "green", "is_won": true, "probability": 100 },
+          { "label": "Lost / No Quote", "desc": "Awarded elsewhere or outside scope", "tone": "red", "is_lost": true, "probability": 0 }
+        ]
+      },
+      "fields": [
+        { "entity": "deals", "name": "rfq_number", "label": "RFQ number", "type": "text", "why": "How the customer refers to it." },
+        { "entity": "deals", "name": "vendor", "label": "Vendor", "type": "text", "why": "Which line is quoting." },
+        { "entity": "deals", "name": "commission_rate", "label": "Commission rate (%)", "type": "number", "why": "What we earn on it." },
+        { "entity": "deals", "name": "requested_ship_date", "label": "Requested ship date", "type": "date", "why": "Customer's need-by." }
+      ],
+      "automations": [
+        { "name": "Quote follow-up", "trigger": "deal_idle_days", "days": 7, "action": "create_task", "title": "Follow up on the customer quote", "priority": "high", "why": "Seven days without a customer response." },
+        { "name": "POs are hot", "trigger": "deal_stage_is", "stage": "PO Received", "action": "set_hot_flag", "why": "Real orders need watching through ship." }
+      ],
+      "views": [
+        { "entity": "deals", "name": "Quotes out", "filters": { "stage": "Customer Quote Sent" }, "why": "Waiting on customers." }
+      ]
+    }
+  },
+  {
+    "slug": "field_service",
+    "name": "Field / technical services",
+    "tagline": "Site surveys, proposals, service contracts.",
+    "vertical": "field_service",
+    "description": "Technical field services: a service request or quote ask, a site survey, a proposal for a fix or a service contract, approval, scheduling, completion. Tracks service type, site, contract value, one-off vs recurring, and the scheduled date.",
+    "config": {
+      "pipeline": {
+        "name": "Service work",
+        "stages": [
+          { "label": "Request", "desc": "Customer asked for service or a quote", "tone": "slate", "probability": 15 },
+          { "label": "Site Survey", "desc": "Assessed on site", "tone": "blue", "probability": 35 },
+          { "label": "Proposal Sent", "desc": "Fix or service contract priced", "tone": "cyan", "probability": 55 },
+          { "label": "Approved — Scheduling", "desc": "Customer said yes; booking the crew", "tone": "amber", "probability": 90 },
+          { "label": "Completed", "desc": "Work done and signed off", "tone": "green", "is_won": true, "probability": 100 },
+          { "label": "Declined", "desc": "Customer passed", "tone": "red", "is_lost": true, "probability": 0 }
+        ]
+      },
+      "fields": [
+        { "entity": "deals", "name": "service_type", "label": "Service type", "type": "select", "options": ["Repair", "Installation", "Maintenance contract", "Inspection", "Emergency"], "why": "Which crew and how fast." },
+        { "entity": "deals", "name": "site_address", "label": "Site address", "type": "text", "why": "Where the truck goes." },
+        { "entity": "deals", "name": "recurring", "label": "Recurring contract", "type": "boolean", "why": "One-off vs recurring revenue." },
+        { "entity": "deals", "name": "scheduled_date", "label": "Scheduled date", "type": "date", "why": "The day the crew is booked." }
+      ],
+      "automations": [
+        { "name": "Approved but not scheduled", "trigger": "deal_idle_days", "days": 5, "action": "notify", "why": "Approved work sitting unscheduled for five days is lost goodwill." }
+      ],
+      "views": [
+        { "entity": "deals", "name": "Approved, needs scheduling", "filters": { "stage": "Approved — Scheduling" }, "why": "The coordinator's queue." }
+      ]
+    }
+  },
+  {
+    "slug": "nonprofit",
+    "name": "Nonprofit / fundraising",
+    "tagline": "Prospects, asks, pledges, gifts.",
+    "vertical": "nonprofit",
+    "description": "Raising money from individuals, foundations, and corporations: identify a prospect, cultivate the relationship, make the ask or submit the grant proposal, receive a pledge, then the gift. Tracks ask amount, gift type, program, and pledge date.",
+    "config": {
+      "pipeline": {
+        "name": "Giving",
+        "stages": [
+          { "label": "Prospect", "desc": "Identified; capacity and affinity look right", "tone": "slate", "probability": 10 },
+          { "label": "Cultivating", "desc": "Building the relationship", "tone": "blue", "probability": 25 },
+          { "label": "Ask Made / Proposal Submitted", "desc": "We asked, or the grant is in", "tone": "cyan", "probability": 50 },
+          { "label": "Pledged", "desc": "They said yes; gift pending", "tone": "amber", "probability": 85 },
+          { "label": "Gift Received", "desc": "Money in; steward it", "tone": "green", "is_won": true, "probability": 100 },
+          { "label": "Declined", "desc": "Not this year", "tone": "rose", "is_lost": true, "probability": 0 }
+        ]
+      },
+      "fields": [
+        { "entity": "deals", "name": "gift_type", "label": "Gift type", "type": "select", "options": ["Individual", "Foundation grant", "Corporate", "Event", "Bequest"], "why": "Different cultivation and paperwork." },
+        { "entity": "deals", "name": "program", "label": "Program supported", "type": "text", "why": "Restricted vs general funds." },
+        { "entity": "deals", "name": "pledge_date", "label": "Pledge date", "type": "date", "why": "When they committed." },
+        { "entity": "contacts", "name": "giving_capacity", "label": "Giving capacity", "type": "select", "options": ["Under $1k", "$1k-$10k", "$10k-$50k", "$50k+"], "why": "Prioritise cultivation." }
+      ],
+      "automations": [
+        { "name": "Proposal unanswered", "trigger": "deal_idle_days", "days": 30, "action": "create_task", "title": "Follow up on the ask / proposal", "priority": "medium", "why": "Thirty days without a word from a funder." }
+      ],
+      "views": [
+        { "entity": "deals", "name": "Pledged, not received", "filters": { "stage": "Pledged" }, "why": "Money promised but not in the bank." }
+      ]
+    }
+  }
+]

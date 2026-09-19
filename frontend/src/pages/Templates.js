@@ -191,8 +191,8 @@ export default function Templates() {
               <h2 className="text-sm font-semibold text-gray-900 mb-2">Starters</h2>
               {groups.platform.length === 0 ? (
                 <div className="bg-white border border-dashed border-gray-300 rounded-xl p-5 text-sm text-gray-600">
-                  The starter gallery hasn't been generated on this deployment yet. You can still <Link to="/setup" className="text-brand-blue hover:underline">describe your business</Link> and get the same result.
-                  {isSuper && ' As a super-admin you can generate it from the button above.'}
+                  The starter gallery is seeded when the server starts; nothing has landed here yet. You can still <Link to="/setup" className="text-brand-blue hover:underline">describe your business</Link> and get the same result.
+                  {isSuper && ' As a super-admin you can also draft it with AI from the button above (the checked-in set returns on the next deploy).'}
                 </div>
               ) : (
                 <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">

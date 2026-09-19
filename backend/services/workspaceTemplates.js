@@ -321,9 +321,62 @@ async function generatePlatformTemplates({ orgId, userId, only = null }) {
   return { generated, failed };
 }
 
+// Boot-time seed of the starter gallery from backend/data/
+// platformWorkspaceTemplates.json — reviewed, hand-curated configs checked
+// into the repo, so the gallery exists on every deployment without an AI call
+// or a super-admin click. Idempotent upsert by slug (org_id NULL); the file
+// is the source of truth, so a super-admin "regenerate" via the API is
+// overwritten on the next boot by design. Never throws — a bad file logs and
+// the app still starts.
+const PLATFORM_FILE = require('path').join(__dirname, '..', 'data', 'platformWorkspaceTemplates.json');
+
+function loadPlatformFile(file = PLATFORM_FILE) {
+  const raw = JSON.parse(require('fs').readFileSync(file, 'utf8'));
+  if (!Array.isArray(raw)) throw new Error('platform templates file must be an array');
+  return raw;
+}
+
+async function seedPlatformTemplates({ file = PLATFORM_FILE, log = console } = {}) {
+  let entries;
+  try { entries = loadPlatformFile(file); } catch (err) {
+    log.error(`workspace-templates seed: cannot read ${file}: ${err.message}`);
+    return { seeded: 0, failed: [] };
+  }
+  let seeded = 0;
+  const failed = [];
+  for (const t of entries) {
+    const slug = typeof t.slug === 'string' && SLUG_RE.test(t.slug) ? t.slug : null;
+    if (!slug) { failed.push({ slug: t.slug, error: 'invalid slug' }); continue; }
+    const v = validateConfig(t.config);
+    if (!v.ok) { failed.push({ slug, error: v.errors.join('; ') }); continue; }
+    try {
+      await pool.query(
+        `INSERT INTO workspace_templates (org_id, created_by, slug, name, tagline, vertical, description, config, is_public)
+         VALUES (NULL, NULL, $1, $2, $3, $4, $5, $6::jsonb, TRUE)
+         ON CONFLICT ((COALESCE(org_id, 0)), slug) DO UPDATE
+           SET name = EXCLUDED.name, tagline = EXCLUDED.tagline, vertical = EXCLUDED.vertical,
+               description = EXCLUDED.description, config = EXCLUDED.config, is_public = TRUE,
+               updated_at = CASE WHEN workspace_templates.config IS DISTINCT FROM EXCLUDED.config THEN NOW() ELSE workspace_templates.updated_at END`,
+        [slug, String(t.name || slug).slice(0, 120), t.tagline ? String(t.tagline).slice(0, 200) : null,
+          t.vertical ? String(t.vertical).slice(0, 60) : null, t.description ? String(t.description).slice(0, 4000) : null,
+          JSON.stringify(v.config)]
+      );
+      seeded++;
+    } catch (err) {
+      failed.push({ slug, error: err.message });
+    }
+  }
+  if (failed.length) log.warn(`workspace-templates seed: ${seeded} ok, ${failed.length} failed: ${failed.map((f) => `${f.slug} (${f.error})`).join('; ')}`);
+  else log.log(`✅ Starter workspace templates seeded (${seeded})`);
+  return { seeded, failed };
+}
+
 module.exports = {
   sanitizeConfig,
   validateConfig,
+  loadPlatformFile,
+  seedPlatformTemplates,
+  PLATFORM_FILE,
   snapshotOrg,
   summarize,
   listTemplates,

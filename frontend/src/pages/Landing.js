@@ -140,33 +140,35 @@ export default function Landing() {
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-24">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-center">
           <div>
+            {/* Positioning (spec 203, Part 1; adopted 2026-09-19): sell the
+                CRM that configures around the business, not "open-source
+                HubSpot alternative". Open source + price are proof points
+                below the fold and on the comparison pages, not the headline. */}
             <div className="inline-block px-3 py-1 mb-5 bg-brand-blue/10 text-brand-blue rounded-full text-xs font-semibold uppercase tracking-wider">
-              Open Source · Free to Start · Hosted Plans from $15
+              Open source · Free to start · Hosted from $15 a seat
             </div>
             <h2 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-gray-900 mb-5 leading-tight">
-              A full, open-source CRM with an AI copilot as the front door.
+              Your CRM. Your rules.
             </h2>
             <p className="text-xl sm:text-2xl text-gray-700 mb-6 leading-snug">
-              Run it yourself for $0, or let us host it from $15 a seat — a fraction of what HubSpot charges. AI on top, usage-based.
+              Describe how your business sells. The Open CRM proposes the pipeline, the fields, and the follow-ups to match — and nothing changes until you approve it.
             </p>
             <p className="hidden sm:block text-base sm:text-lg text-gray-600 mb-10 leading-relaxed">
-              The incumbents charge $90–100 a seat for tools you hunt through. The Open CRM is open source (AGPL-3.0) — self-host it free, or get fully-managed hosting from $15 a seat — with a Chat-First copilot that actually does the work. AI is pay-as-you-go on top, or bring your own Anthropic key and pay no markup.
+              Start with a complete CRM. Tell it how you sell in plain English, or start from a template for a business like yours, and it builds the workspace around your process instead of making your process fit the software. Open source (AGPL-3.0): run it yourself for $0, or let us host it. AI is pay-as-you-go, or bring your own Anthropic key and pay no markup.
             </p>
             <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
-              <Link to="/request-access" className="px-6 sm:px-8 py-3 sm:py-4 bg-brand-blue hover:bg-brand-blue-dark text-white rounded-lg text-base sm:text-lg font-semibold text-center transition">
-                Get started free
-              </Link>
-              <a href="#pricing" className="px-6 sm:px-8 py-3 sm:py-4 border-2 border-gray-300 text-gray-900 rounded-lg text-base sm:text-lg font-semibold hover:bg-gray-50 text-center transition">
-                See pricing
+              <BuildMyCrmButton className="justify-center" />
+              <a href="#how-you-sell" className="px-6 sm:px-8 py-3 sm:py-4 border-2 border-gray-300 text-gray-900 rounded-lg text-base sm:text-lg font-semibold hover:bg-gray-50 text-center transition min-h-[44px] inline-flex items-center justify-center">
+                See how it works
               </a>
             </div>
             <p className="text-gray-600 text-sm mt-5">
-              Sign up and you're in — no approval queue · Already a user? <Link to="/login" className="text-brand-blue underline hover:no-underline">Sign in</Link> · <a href="https://github.com/jcbuffalo/theopencrm" target="_blank" rel="noreferrer" className="text-brand-blue underline hover:no-underline">Source on GitHub</a>
+              Free to start, no approval queue · <a href="#pricing" className="text-brand-blue underline hover:no-underline">Pricing</a> · Already a user? <Link to="/login" className="text-brand-blue underline hover:no-underline">Sign in</Link> · <a href="https://github.com/jcbuffalo/theopencrm" target="_blank" rel="noreferrer" className="text-brand-blue underline hover:no-underline">Source on GitHub</a>
             </p>
           </div>
           <div>
             <HeroPreview />
-            <p className="text-xs text-gray-500 text-center mt-3">Shown: the manufacturer's-rep edition. New workspaces start on the standard 6-stage pipeline — the same underlying screens, different stage names.</p>
+            <p className="text-xs text-gray-500 text-center mt-3">Shown: a workspace being built from a plain-English description. Every change is proposed first; you tick what you want.</p>
           </div>
         </div>
       </section>

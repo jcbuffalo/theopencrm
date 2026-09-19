@@ -221,8 +221,13 @@ guarantee (the client still applies through `POST /api/ai/actions/apply`). There
   "Save as template" in `/settings/pipeline`, cards on Settings → Workspace.
 - Tests: `backend/test/workspaceTemplates.test.js` (13), `frontend/src/pages/Templates.test.jsx` (7),
   `WorkspaceBuilder.test.jsx` (+2).
-- **Owner action:** the starter gallery is empty on prod until a super-admin clicks "Generate
-  starter gallery" on `/templates` (12 planning calls, ~1 min, metered to the clicking org).
+- **Starter gallery (evening follow-up):** hand-authored, reviewed configs in
+  `backend/data/platformWorkspaceTemplates.json`, pinned by `test/platformTemplatesSeed.test.js`
+  and seeded at boot (`seedPlatformTemplates`, upsert by slug). No owner click needed; the
+  super-admin AI regenerate remains as an optional refresh (`scripts/generate-platform-templates.js`).
+- **Hero rewrite (evening follow-up, D5):** Landing headline is now "Your CRM. Your rules." with
+  the adaptive-CRM subhead and a "Build my CRM" CTA; the crawlable shell + meta mirror it;
+  `HeroPreview` shows the `/setup` moment. One-commit revert documented in `REVIEW_2026_09_22_TUESDAY.md`.
 
 ### Phase 3 — Marketing surfaces (~3–5 days; mostly content, a little app code)
 

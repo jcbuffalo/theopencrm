@@ -1248,6 +1248,13 @@ app.listen(PORT, async () => {
   if (process.env.NODE_ENV === 'production') {
     console.log('\n🗄️  Running database migrations...\n');
     await runMigrationsOnStartup();
+    // Starter workspace-template gallery (spec 203 Phase 2) — reviewed configs
+    // from backend/data/, upserted by slug. Never blocks boot.
+    try {
+      await require('./services/workspaceTemplates').seedPlatformTemplates();
+    } catch (err) {
+      console.error('workspace-templates seed failed:', err.message);
+    }
   }
 
   // Customer-Success e2e test-account seeder — only when CS_E2E_SEED=true.
