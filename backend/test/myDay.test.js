@@ -18,6 +18,8 @@
 //   5. quietAccounts  — customer companies with no touch in > 30 days
 //   6. dealsNeedingAttention — open deals past close date / gone cold
 //   7. has_data       — deals / contacts / companies row counts (one query)
+//   8. nextSteps      — open deals whose next_step_date is today/overdue
+//                       (migration 172; runs last so 1–7 keep their order)
 //
 // Asserts: 200 shape + counts, org-scoping (scope value threaded into every
 // query), user-scoping of tasksDue, and section-level resilience (a missing
@@ -109,6 +111,14 @@ describe('GET /my-day', () => {
     });
     // 7. has_data — row counts.
     mockPool.query.mockResolvedValueOnce({ rows: [{ deals: 4, contacts: 9, companies: 2 }] });
+    // 8. nextSteps (migration 172) — one overdue committed next step.
+    mockPool.query.mockResolvedValueOnce({
+      rows: [{
+        id: 8, title: 'Bravo renewal', stage: 'PROPOSAL', deal_type: 'default', amount: '9000.00',
+        next_step: 'Send revised quote to Dana', next_step_date: daysAgoDate(2),
+        company_name: 'Bravo LLC', contact_name: 'Dana Reyes',
+      }],
+    });
 
     const res = await request(buildApp())
       .get('/my-day')
@@ -118,10 +128,16 @@ describe('GET /my-day', () => {
 
     // Org-scoping: every section query is parameterized on the org scope value.
     const calls = mockPool.query.mock.calls;
-    expect(calls).toHaveLength(7);
-    for (let i = 1; i < 7; i++) {
+    expect(calls).toHaveLength(8);
+    for (let i = 1; i < 8; i++) {
       expect(calls[i][1][0]).toBe(ORG_ID);
     }
+    // nextSteps runs LAST (after has_data) and only pulls dated, open deals.
+    expect(calls[7][0]).toMatch(/next_step_date <= CURRENT_DATE/);
+    expect(calls[7][0]).toMatch(/d\.stage NOT IN/);
+    expect(res.body.nextSteps).toHaveLength(1);
+    expect(res.body.nextSteps[0].next_step).toBe('Send revised quote to Dana');
+    expect(res.body.nextSteps[0].overdue_days).toBeGreaterThanOrEqual(1);
     // has_data is one round-trip, org-scoped on all three tables.
     expect(calls[6][0]).toMatch(/FROM deals\s+WHERE org_id = \$1/);
     expect(calls[6][0]).toMatch(/FROM contacts\s+WHERE org_id = \$1/);
@@ -159,7 +175,8 @@ describe('GET /my-day', () => {
       atRiskAccounts: 1,
       quietAccounts: 2,
       dealsNeedingAttention: 1,
-      total: 6,
+      nextSteps: 1,
+      total: 7,
     });
   });
 

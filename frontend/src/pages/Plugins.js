@@ -4,15 +4,14 @@
 // later. See the LICENSE file at the repository root, or
 // https://www.gnu.org/licenses/agpl-3.0.html. Distributed WITHOUT ANY WARRANTY.
 
-// Plugins page — Phase C / D entry point.
+// Plugins page.
 //
 // When the plugins_enabled feature flag is OFF for the caller's org, the
 // /api/plugins route returns 403 FEATURE_DISABLED. We catch that and show
-// a marketing-style "coming soon" view that explains what plugins will do.
+// a view explaining what extensions are and how to turn them on — the
+// platform-wide library (57 entries) and conversational builder are shipped;
+// this per-org toggle is the only thing standing between this org and them.
 // When the flag is ON, we list the org's plugins + offer creation flows.
-//
-// Conversational creation (POST /api/plugins/from-prompt) is queued for
-// the Phase D builder UX. This page is the foundation it'll plug into.
 
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -40,11 +39,12 @@ function ComingSoon() {
         <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-white text-brand-blue shadow-card">
           <Icon name="sparkles" size={24} />
         </div>
-        <h1 className="text-2xl font-semibold tracking-tight text-gray-900 mb-3">Plugins — coming soon</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-gray-900 mb-3">Extensions aren't turned on for this workspace yet</h1>
         <p className="text-base text-gray-700 max-w-2xl mx-auto">
-          Build your own automations and integrations in plain English. Tell Claude what you want;
-          the system generates a sandboxed plugin and runs it in your workspace. No code required —
-          unless you want it.
+          The extension library ships 57 ready-made automations and integrations, plus a
+          conversational builder — describe what you want in plain English and Claude generates a
+          sandboxed plugin that runs in your workspace. Ask a workspace admin to turn on Extensions
+          under Settings → Modules to get started.
         </p>
       </div>
 
@@ -66,8 +66,8 @@ function ComingSoon() {
       </div>
 
       <p className="text-xs text-gray-500 mt-6 text-center">
-        Plugins are part of the Professional and Enterprise tiers. Read the design at{' '}
-        <a href="https://github.com/jcbuffalo/lightweight-crm/blob/master/PLUGIN_PLATFORM_VISION.md"
+        Read how the extension platform works at{' '}
+        <a href="https://github.com/jcbuffalo/theopencrm/blob/master/PLUGIN_PLATFORM_VISION.md"
            target="_blank" rel="noreferrer" className="text-brand-blue underline">PLUGIN_PLATFORM_VISION.md</a>.
       </p>
     </Container>
@@ -120,11 +120,11 @@ function PluginsList({ plugins, onRefresh }) {
       )}
 
       <p className="text-xs text-gray-500">
-        The plugin runtime is in Phase C build-out. Plugins created today are persisted but won't fire
-        until the sandbox lands. See{' '}
-        <a href="https://github.com/jcbuffalo/lightweight-crm/blob/master/PLUGIN_PLATFORM_VISION.md"
+        Extensions run on the trigger engine — most writes come back as confirm-first proposals in
+        Chat unless a plugin has opted into autonomous mode. See{' '}
+        <a href="https://github.com/jcbuffalo/theopencrm/blob/master/PLUGIN_PLATFORM_VISION.md"
            target="_blank" rel="noreferrer" className="text-brand-blue underline">PLUGIN_PLATFORM_VISION.md</a>{' '}
-        for status.
+        for details.
       </p>
     </>
   );

@@ -21,7 +21,7 @@
 // go, and the server moves them in the same save.
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import api from '../api';
 import Nav from '../components/Nav';
 import { useAuth } from '../AuthContext';
@@ -246,6 +246,7 @@ function StageRow({ stage, index, count, total, canEdit, showPhase, paletteOpen,
 
 export default function PipelineSettings() {
   const { user, orgProfile, orgRole, isAdmin, refreshPipeline } = useAuth();
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [stages, setStages] = useState([]);
   // { [staleStageId]: { count, to } } — stages whose deals must be re-homed
@@ -534,6 +535,8 @@ export default function PipelineSettings() {
           secondaryActions={canEdit && hasOrg ? [
             { label: 'Add stage', icon: 'plus', onClick: addStage, disabled: stages.length >= maxStages },
             { label: 'New pipeline', icon: 'plus', onClick: openNew },
+            { label: 'Build from a description', icon: 'sparkles', onClick: () => navigate('/setup') },
+            { label: 'Save as template', icon: 'copy', onClick: () => navigate('/templates?save=1') },
             ...(isTypePipeline
               ? [{ label: 'Delete pipeline', icon: 'trash', onClick: openDelete }]
               : [{ label: 'Reset to default', icon: 'refresh', onClick: openReset, disabled: !data?.is_custom && Object.keys(counts).every(k => stages.some(st => st.id === k)) }]),

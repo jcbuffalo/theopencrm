@@ -95,13 +95,13 @@ function TaskForm({ task, contacts, deals, onClose, onSave }) {
         {error && <Alert tone="danger">{error}</Alert>}
         <Input label="Title" placeholder="What needs doing?" value={form.title} onChange={set('title')} required autoFocus />
         <Textarea label="Description" placeholder="Optional" value={form.description} onChange={set('description')} rows={3} />
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Input type="date" label="Due date" value={form.due_date} onChange={set('due_date')} />
           <Select label="Priority" value={form.priority} onChange={set('priority')}>
             {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
           </Select>
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Select label="Status" value={form.status} onChange={set('status')}>
             {STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
           </Select>
@@ -114,7 +114,7 @@ function TaskForm({ task, contacts, deals, onClose, onSave }) {
             {RECURRENCE_OPTIONS.map(([v, label]) => <option key={v || 'none'} value={v}>{label}</option>)}
           </Select>
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Select label="Linked contact" value={form.contact_id} onChange={set('contact_id')}>
             <option value="">None</option>
             {contacts.map(c => <option key={c.id} value={c.id}>{c.first_name} {c.last_name}</option>)}
@@ -172,6 +172,14 @@ export default function Tasks() {
   }, [location.search]);
   const [editing, setEditing] = useState(null);
   const [creating, setCreating] = useState(false);
+
+  // Quick-add (CommandPalette "New task" / nav "+" button) → ?new=1 opens
+  // the create form, same as clicking the page's own "New task" button.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('new') === '1') setCreating(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
   const [activeViewId, setActiveViewId] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [members, setMembers] = useState([]);

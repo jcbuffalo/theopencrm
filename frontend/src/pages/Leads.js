@@ -80,7 +80,7 @@ function LeadCard({ lead, members, onClick, onMove }) {
             </Link>
           ) : lead.converted_contact_id ? (
             <Link
-              to={`/contacts?search=${encodeURIComponent(lead.name || '')}`}
+              to={`/contacts/${lead.converted_contact_id}`}
               onClick={(e) => e.stopPropagation()}
               className="text-[11px] text-brand-blue hover:underline flex-shrink-0"
             >
@@ -203,7 +203,7 @@ function LeadModal({ lead, members, onClose, onSaved, onDeleted, onConverted }) 
         <div className="space-y-3 text-sm text-gray-700">
           <p><span className="font-medium">{lead.name}</span> was converted{lead.company_name ? ` (${lead.company_name})` : ''}.</p>
           <div className="flex gap-4">
-            {lead.converted_contact_id && <Link to={`/contacts?search=${encodeURIComponent(lead.name || '')}`} className="text-brand-blue hover:underline">View contact →</Link>}
+            {lead.converted_contact_id && <Link to={`/contacts/${lead.converted_contact_id}`} className="text-brand-blue hover:underline">View contact →</Link>}
             {lead.converted_deal_id && <Link to={`/deals?dealId=${lead.converted_deal_id}`} className="text-brand-blue hover:underline">View deal →</Link>}
           </div>
         </div>
@@ -559,6 +559,9 @@ export default function Leads() {
   const [sortByScore, setSortByScore] = useState(false);
   const [toast, setToast] = useState(null);
   const [gated, setGated] = useState(false);
+  // Phone fallback (below md, mirrors the Deals "Focus mode" pattern): a
+  // single status picked from a Select instead of five w-64 lanes.
+  const [mobileStatus, setMobileStatus] = useState(null);
 
   // Ref-free trick not needed: load reads the current sort flag via arg.
   const load = async (byScore = sortByScore) => {
@@ -674,36 +677,93 @@ export default function Leads() {
             />
           </Card>
         ) : (
-          <div className="flex-1 overflow-x-auto">
-            <div className="flex gap-4 min-h-full pb-4">
-              {STATUSES.map((stage) => (
-                <div key={stage.id} className="flex flex-col w-64 xl:w-72 flex-shrink-0">
-                  <div className={`${stage.header} rounded-t px-3 py-2.5 border border-b-0 ${stage.border}`}>
-                    <div className="flex justify-between items-center gap-2">
-                      <span className="font-semibold text-gray-800 text-sm flex items-baseline gap-2 min-w-0">
-                        <span className="truncate">{stage.label}</span>
-                        <span className="font-normal text-gray-500 text-xs">{byStatus[stage.id].length}</span>
-                      </span>
-                      {stage.id !== 'converted' && (
-                        <button
-                          onClick={() => setModal({ status: stage.id })}
-                          aria-label={`Add lead to ${stage.label}`}
-                          title={`Add lead to ${stage.label}`}
-                          className="text-gray-400 hover:text-brand-blue hover:bg-info-50 w-7 h-7 flex items-center justify-center rounded-md"
-                        ><Icon name="plus" size={16} /></button>
-                      )}
+          <>
+            {/* Lane board — md+ only. Five w-64 lanes are 1,300px wide, which
+                forces sideways scroll a phone shouldn't have to fight. */}
+            <div className="hidden md:flex md:flex-1 md:overflow-x-auto">
+              <div className="flex gap-4 min-h-full pb-4">
+                {STATUSES.map((stage) => (
+                  <div key={stage.id} className="flex flex-col w-64 xl:w-72 flex-shrink-0">
+                    <div className={`${stage.header} rounded-t px-3 py-2.5 border border-b-0 ${stage.border}`}>
+                      <div className="flex justify-between items-center gap-2">
+                        <span className="font-semibold text-gray-800 text-sm flex items-baseline gap-2 min-w-0">
+                          <span className="truncate">{stage.label}</span>
+                          <span className="font-normal text-gray-500 text-xs">{byStatus[stage.id].length}</span>
+                        </span>
+                        {stage.id !== 'converted' && (
+                          <button
+                            onClick={() => setModal({ status: stage.id })}
+                            aria-label={`Add lead to ${stage.label}`}
+                            title={`Add lead to ${stage.label}`}
+                            className="text-gray-400 hover:text-brand-blue hover:bg-info-50 w-7 h-7 flex items-center justify-center rounded-md"
+                          ><Icon name="plus" size={16} /></button>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-gray-500 mt-1 line-clamp-1" title={stage.desc}>{stage.desc}</div>
                     </div>
-                    <div className="text-[11px] text-gray-500 mt-1 line-clamp-1" title={stage.desc}>{stage.desc}</div>
+                    <div className={`flex-1 min-h-32 rounded-b border ${stage.border} p-2 space-y-2 ${stage.bg}`}>
+                      {byStatus[stage.id].map((l) => (
+                        <LeadCard key={l.id} lead={l} members={members} onClick={setModal} onMove={move} />
+                      ))}
+                    </div>
                   </div>
-                  <div className={`flex-1 min-h-32 rounded-b border ${stage.border} p-2 space-y-2 ${stage.bg}`}>
-                    {byStatus[stage.id].map((l) => (
-                      <LeadCard key={l.id} lead={l} members={members} onClick={setModal} onMove={move} />
-                    ))}
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-          </div>
+
+            {/* Phone fallback (below md) — single-status selector + a
+                vertical card list, mirroring Deals' Focus mode. */}
+            <div className="md:hidden flex-1 overflow-y-auto pb-6">
+              <div className="px-3 py-3 sticky top-0 bg-white z-10 border-b border-gray-200">
+                <Select
+                  label="Status"
+                  value={mobileStatus || STATUSES[0].id}
+                  onChange={(e) => setMobileStatus(e.target.value)}
+                  aria-label="Lead status to focus on"
+                  wrapperClassName="w-full max-w-md"
+                >
+                  {STATUSES.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label} ({byStatus[s.id].length})
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="px-3 pt-3 max-w-3xl mx-auto">
+                {(() => {
+                  const statusId = mobileStatus || STATUSES[0].id;
+                  const stage = STATUSES.find((s) => s.id === statusId) || STATUSES[0];
+                  const stageLeads = byStatus[statusId] || [];
+                  return (
+                    <>
+                      <div className="flex items-center justify-between mb-3 gap-2">
+                        <div className="min-w-0">
+                          <h2 className="text-lg font-semibold text-gray-900 truncate">{stage.label}</h2>
+                          <p className="text-xs text-gray-500 line-clamp-2">{stage.desc}</p>
+                        </div>
+                        {stage.id !== 'converted' && (
+                          <Button size="sm" icon="plus" className="flex-shrink-0" onClick={() => setModal({ status: statusId })}>
+                            Add
+                          </Button>
+                        )}
+                      </div>
+                      {stageLeads.length === 0 ? (
+                        <div className="bg-white rounded-lg border border-dashed border-gray-200 p-6 text-center text-sm text-gray-400">
+                          No leads in {stage.label.toLowerCase()}.
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {stageLeads.map((l) => (
+                            <LeadCard key={l.id} lead={l} members={members} onClick={setModal} onMove={move} />
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+          </>
         )}
       </Container>
 

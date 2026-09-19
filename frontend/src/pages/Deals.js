@@ -130,23 +130,40 @@ function Column({ stage, deals, onDealClick, onAdd, stageColors, profile }) {
   );
 }
 
-function AddModal({ stageId, onClose, onCreate, customers, vendors, stageLabel, profile, dealType = 'default', pipelineOptions = [] }) {
+// Sentinel option in the Customer select that reveals the inline "New
+// company name" field (one-motion deal + company + contact creation).
+const NEW_COMPANY = '__new__';
+
+function AddModal({ stageId, onClose, onCreate, customers, vendors, stageLabel, profile, dealType = 'default', pipelineOptions = [], showAdvancedPanels = false }) {
   const [form, setForm] = useState({
     title: '', customer_id: '', vendor_id: '', vertical: '', amount: '',
     expected_close_date: '', notes: '', hot_flag: false, stage: stageId,
     deal_type: dealType,
+    // One-motion create (Wave 3): a brand-new company typed inline and an
+    // optional primary contact. The server finds-or-creates both by name
+    // (services/recordUpsert.js — the same path the chat copilot uses).
+    company_name: '', contact_name: '', contact_email: '',
   });
   const [saving, setSaving] = useState(false);
+  const [withContact, setWithContact] = useState(false);
   // >1 pipeline (spec 201) → let the user pick which one the deal joins.
   const multiPipeline = pipelineOptions.length > 1;
+  const newCompany = form.customer_id === NEW_COMPANY;
 
   const submit = async (e) => {
     e.preventDefault();
     if (!form.title) return;
+    if (newCompany && !form.company_name.trim()) return;
     setSaving(true);
     try {
-      const payload = { ...form, amount: form.amount === '' ? null : Number(form.amount) };
+      const { company_name, contact_name, contact_email, ...rest } = form;
+      const payload = { ...rest, amount: form.amount === '' ? null : Number(form.amount) };
       if (!multiPipeline) delete payload.deal_type; // single-pipeline orgs post exactly what they always did
+      if (newCompany) { payload.customer_id = ''; payload.company_name = company_name.trim(); }
+      if (withContact && (contact_name.trim() || contact_email.trim())) {
+        if (contact_name.trim()) payload.contact_name = contact_name.trim();
+        if (contact_email.trim()) payload.contact_email = contact_email.trim();
+      }
       await onCreate(payload);
       onClose();
     } finally {
@@ -184,18 +201,51 @@ function AddModal({ stageId, onClose, onCreate, customers, vendors, stageLabel, 
             {pipelineOptions.map(p => <option key={p.deal_type} value={p.deal_type}>{p.name}</option>)}
           </Select>
         )}
-        <div className="grid grid-cols-2 gap-4">
+        {/* Vendor + Vertical are Zang-only concepts (manufacturer's-rep
+            RFQ/vendor workflow) — a generic or jcp org never sees them. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Select label="Customer" value={form.customer_id} onChange={set('customer_id')}>
             <option value="">Customer…</option>
             {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            <option value={NEW_COMPANY}>+ New company…</option>
           </Select>
-          <Select label="Primary vendor" value={form.vendor_id} onChange={set('vendor_id')}>
-            <option value="">Primary vendor…</option>
-            {vendors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
+          {newCompany && (
+            <Input
+              label="New company name"
+              value={form.company_name}
+              onChange={set('company_name')}
+              placeholder="e.g. Bravo LLC"
+              autoFocus
+              required
+              hint="Created with the deal (or matched if it already exists)."
+            />
+          )}
+          {showAdvancedPanels && (
+            <Select label="Primary vendor" value={form.vendor_id} onChange={set('vendor_id')}>
+              <option value="">Primary vendor…</option>
+              {vendors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </Select>
+          )}
         </div>
-        <div className="grid grid-cols-2 gap-4">
-          <Input label="Vertical" value={form.vertical} onChange={set('vertical')} />
+        {/* Optional primary contact, created (or matched by email) in the
+            same motion. Collapsed by default so the modal stays short on a
+            phone. */}
+        {withContact ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Input label="Primary contact" value={form.contact_name} onChange={set('contact_name')} placeholder="First Last" />
+            <Input label="Contact email" type="email" value={form.contact_email} onChange={set('contact_email')} placeholder="name@company.com" hint="Matched to an existing contact by email, else created." />
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setWithContact(true)}
+            className="inline-flex min-h-[36px] items-center text-sm font-medium text-brand-blue hover:underline"
+          >
+            + Add a primary contact
+          </button>
+        )}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {showAdvancedPanels && <Input label="Vertical" value={form.vertical} onChange={set('vertical')} />}
           <Input label="Amount" type="number" value={form.amount} onChange={set('amount')} />
         </div>
         <Input label="Expected close date" type="date" value={form.expected_close_date} onChange={set('expected_close_date')} />
@@ -383,14 +433,44 @@ export default function Deals() {
     setPendingDealAction({ id: Number(dealIdParam), compose });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search]);
+
+  // Quick-add (CommandPalette "New deal" / nav "+" button) → ?new=1 opens the
+  // Add modal on the currently active phase's first stage, same as clicking
+  // the page's own "New deal" button.
   useEffect(() => {
-    if (!pendingDealAction || !deals.length) return;
+    const params = new URLSearchParams(location.search);
+    if (params.get('new') === '1') setAddStageId(phase.stages[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
+  // Resolve the deep-linked deal once the board has finished its first fetch
+  // attempt (not merely "has any rows" — an empty "My deals" board should
+  // still fall back). If it isn't on the currently loaded board (a different
+  // pipeline, or the "My deals" filter), fetch it directly rather than
+  // failing silently; a genuine 404 surfaces as a banner instead of nothing
+  // happening.
+  useEffect(() => {
+    if (!pendingDealAction || loading) return;
+    const action = pendingDealAction.compose ? 'compose-email' : null;
     const target = deals.find(d => d.id === pendingDealAction.id);
     if (target) {
-      setSelectedDeal({ ...target, _initialAction: pendingDealAction.compose ? 'compose-email' : null });
+      setSelectedDeal({ ...target, _initialAction: action });
       setPendingDealAction(null);
+      return;
     }
-  }, [pendingDealAction, deals]);
+    let alive = true;
+    api.get(`/deals/${pendingDealAction.id}`)
+      .then((res) => {
+        if (!alive) return;
+        setSelectedDeal({ ...res.data, _initialAction: action });
+      })
+      .catch(() => {
+        if (alive) setError('Deal not found');
+      })
+      .finally(() => {
+        if (alive) setPendingDealAction(null);
+      });
+    return () => { alive = false; };
+  }, [pendingDealAction, deals, loading]);
 
   // Monotonic guard so out-of-order fetchAll responses can't clobber newer
   // state. Every call bumps the counter; a response only writes state if it is
@@ -529,8 +609,17 @@ export default function Deals() {
 
   const handleCreate = async (payload) => {
     try {
-      await api.post('/deals', payload);
-      fetchAll();
+      const res = await api.post('/deals', payload);
+      const created = res.data;
+      // Land on what you just created. If it landed on a different pipeline
+      // than the one we're viewing (multi-pipeline orgs only), switch boards
+      // first — that switch's own effect refetches, so skip the extra call.
+      if (multiPipeline && created?.deal_type && created.deal_type !== activeDealType) {
+        setDealType(created.deal_type);
+      } else {
+        fetchAll();
+      }
+      if (created?.id) setSelectedDeal(created);
     } catch (e) {
       // Tier-cap 402 → non-blocking upgrade nudge instead of the generic error.
       if (e.response?.status === 402 && e.response?.data?.code === 'TIER_LIMIT_EXCEEDED') {
@@ -836,6 +925,7 @@ export default function Deals() {
           companies={companies}
           onClose={() => setSelectedDeal(null)}
           onChanged={fetchAll}
+          initialAction={selectedDeal._initialAction}
         />
       )}
 
@@ -850,6 +940,7 @@ export default function Deals() {
           profile={cfg.profile}
           dealType={activeDealType}
           pipelineOptions={pipelineOptions}
+          showAdvancedPanels={cfg.showAdvancedPanels}
         />
       )}
 

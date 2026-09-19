@@ -18,6 +18,10 @@
 //   contact?    : { id, first_name, last_name, email } — locks the To: field
 //   deal?       : { id, title } — used for {{deal.title}} resolution and tracking
 //   defaultTo?  : string — when neither contact nor deal carries an email
+//   initialSubject? / initialBody? : string — prefill for the Subject/Body
+//                 fields (AI-drafted follow-ups, "Open in composer" from a
+//                 chat draft). Applied each time the modal opens; the user
+//                 can still edit or pick a template over the top.
 //
 // The "To:" field is read-only when a contact with an email was passed in
 // (the usual surface) and editable otherwise (ad-hoc compose, deal w/o
@@ -31,7 +35,9 @@ import { Alert, Button, Icon, Input, Modal, Select, Textarea } from './ui';
 // like missing `@` before we let the user click Send. Backend re-validates.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export default function EmailComposerModal({ open, onClose, onSent, contact, deal, defaultTo }) {
+export default function EmailComposerModal({
+  open, onClose, onSent, contact, deal, defaultTo, initialSubject, initialBody,
+}) {
   // Resolve initial To: address. Priority: explicit defaultTo > contact.email.
   const initialTo = defaultTo || contact?.email || '';
   const toIsLocked = Boolean(contact?.email) && !defaultTo;
@@ -58,12 +64,12 @@ export default function EmailComposerModal({ open, onClose, onSent, contact, dea
   useEffect(() => {
     if (!open) return;
     setTo(defaultTo || contact?.email || '');
-    setSubject('');
-    setBody('');
+    setSubject(initialSubject || '');
+    setBody(initialBody || '');
     setTemplateId('');
     setError('');
     setResult(null);
-  }, [open, contact?.id, deal?.id, defaultTo, contact?.email]);
+  }, [open, contact?.id, deal?.id, defaultTo, contact?.email, initialSubject, initialBody]);
 
   // Load templates lazily — only when the modal opens. Two fetches in
   // parallel: the full alphabetical list and the recently-used top-5.
@@ -184,8 +190,10 @@ export default function EmailComposerModal({ open, onClose, onSent, contact, dea
         // whether their email actually went out or was console-logged
         // because SMTP isn't configured. Mirrors the SendRfqModal pattern.
         <div className="space-y-3">
-          <Alert tone={result.transport === 'console' ? 'warning' : 'success'}>
-            {result.transport === 'console'
+          <Alert tone={result.delivery_error ? 'danger' : result.transport === 'console' ? 'warning' : 'success'}>
+            {result.delivery_error
+              ? `Delivery failed: ${result.delivery_error}`
+              : result.transport === 'console'
               ? 'Recorded — but email service is not configured, so no real message was delivered. Set GMAIL_USER + GMAIL_APP_PASSWORD or SENDGRID_API_KEY on the backend to enable real send.'
               : `Sent via ${result.transport}.`}
           </Alert>

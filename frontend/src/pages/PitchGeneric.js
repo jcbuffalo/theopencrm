@@ -17,7 +17,7 @@ export default function PitchGeneric() {
       <header className="bg-white border-b border-gray-200">
         <div className="max-w-5xl mx-auto px-6 py-4 flex justify-between items-center">
           <BrandLogo size={28} />
-          <Link to="/" className="text-sm text-brand-blue hover:underline">Back to app</Link>
+          <Link to="/request-access" className="text-sm text-brand-blue hover:underline">Get started free</Link>
         </div>
       </header>
 
@@ -34,11 +34,12 @@ export default function PitchGeneric() {
           <h2 className="text-2xl font-bold text-gray-900 mb-4">What you get on day one</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {[
+              ['Chat-first AI copilot', 'A conversational front door that can look up records, draft emails, and propose changes across the CRM — every write is confirm-first, nothing happens without your OK.'],
               ['Drag-and-drop Kanban pipeline', 'Six configurable stages out of the box. Drag deals between columns; the system tracks transitions and time-in-stage automatically.'],
               ['Companies & contacts', 'Standard CRM records with custom fields, search, filters, CSV import.'],
               ['Activities & tasks', 'Log calls, emails, meetings, notes. Tasks with due dates, priorities, and overdue alerts.'],
               ['Reports', 'Hit rate, pipeline value, per-salesman leaderboard, vendor performance — windowed by 7 days, YTD, or all time.'],
-              ['Team workspaces', 'Multi-tenant by org. Owners invite teammates; admin-approved access flow built in.'],
+              ['Team workspaces', 'Multi-tenant by org. Sign up and you\'re in immediately — no approval queue; owners invite teammates from Settings.'],
               ['Document storage', 'Each record has attachable files. Cloud-storage backed with signed-URL downloads.'],
               ['HubSpot / Salesforce import', 'Upload your existing export — column auto-detection means no manual mapping.'],
               ['Audit log + 2FA', 'Security-sensitive events logged with actor, IP, request ID. TOTP 2FA opt-in per user.'],
@@ -61,6 +62,7 @@ export default function PitchGeneric() {
               ['AI assist (Claude)', 'Summarize deals, draft follow-up emails. Bring your Anthropic API key.'],
               ['Microsoft Teams / Zoom / Otter / Fireflies', 'Webhook receivers ready. Configure your secrets and point your meeting tools at the URLs.'],
               ['Triggered automation', 'Stale-RFQ alerts, hot-deal stale-watch, expiring quotes, customer surveys, contract renewals — all running on a 60-min cycle.'],
+              ['Extension library', '57 ready-made automations and integrations, one click to install — or describe your own in plain English and the copilot builds it.'],
             ].map(([title, body]) => (
               <div key={title} className="border border-gray-200 rounded-lg p-3">
                 <p className="font-semibold text-gray-900">{title}</p>
@@ -84,17 +86,16 @@ export default function PitchGeneric() {
           <h2 className="text-2xl font-bold text-gray-900 mb-4">Honest about the surface</h2>
           <p className="text-sm text-gray-600 mb-3">No vapor in the deck. Things on the roadmap that aren't shipped yet:</p>
           <ul className="text-sm text-gray-700 space-y-1">
-            <li>• Mobile app (web is mobile-responsive; native app is on the roadmap)</li>
-            <li>• Marketplace plugins (Stripe, Mailchimp, Slack — direct integrations only for now)</li>
-            <li>• Native HubSpot / Salesforce sync (CSV path is live; bidirectional sync is roadmap)</li>
-            <li>• Workflow builder (custom automations are code-defined today; visual builder is roadmap)</li>
+            <li>• Native mobile app (web is mobile-responsive; a native app is on the roadmap)</li>
+            <li>• Native HubSpot / Salesforce sync (CSV import is live; bidirectional sync is roadmap)</li>
           </ul>
         </section>
 
         <section className="text-center">
-          <p className="text-gray-700 mb-4">Try it. Bring an export of your current pipeline; we'll have you running in under an hour.</p>
+          <p className="text-gray-700 mb-1">Try it. Bring an export of your current pipeline; we'll have you running in under an hour.</p>
+          <p className="text-sm text-gray-500 mb-4">Free hosted plan to start, Starter at $15/seat/mo, Pro at $39/seat/mo — see <Link to="/#pricing" className="underline">pricing</Link> for details.</p>
           <Link to="/request-access" className="inline-block px-6 py-3 bg-brand-blue hover:bg-brand-blue-dark text-white rounded-lg font-semibold">
-            Request access
+            Get started free
           </Link>
         </section>
 

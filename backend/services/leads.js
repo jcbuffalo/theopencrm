@@ -21,6 +21,10 @@
 
 const pool = require('../db');
 const leadScoring = require('./leadScoring'); // scoring/routing (147); requires us lazily, no cycle
+// Per-org effective pipeline (migration 155/156) — convert() resolves the
+// deal's default stage from THIS, not a hardcoded constant (see convertLead).
+const pipelines = require('./pipelines');
+const dealStages = require('../utils/dealStages');
 // Plugin trigger engine (migration 164) — fire-and-forget post-commit
 // dispatch. Emitting here (not the routes) covers BOTH lead entry points:
 // manual creates and public lead-form captures.
@@ -258,9 +262,13 @@ function splitName(name) {
 
 // Convert a lead into a contact (and optionally a deal) in ONE transaction:
 //   1. Lock + re-check the lead under the caller's scope (cross-org → null).
-//   2. INSERT the contacts row from the lead's fields.
-//   3. Optionally INSERT a deals row linked to that contact.
-//   4. Stamp the lead: status='converted', converted_contact_id/_deal_id.
+//   2. Find-or-create the company by name (case-insensitive, org-scoped) —
+//      a real companies row, not a note (see below).
+//   3. INSERT the contacts row from the lead's fields, linked to that company.
+//   4. Optionally INSERT a deals row linked to the contact + company, staged
+//      on the org's EFFECTIVE pipeline (services/pipelines.js) rather than a
+//      hardcoded constant.
+//   5. Stamp the lead: status='converted', converted_contact_id/_deal_id.
 // Any failure rolls the whole thing back — a lead can never end up
 // 'converted' without its contact, or vice versa.
 //
@@ -268,7 +276,8 @@ function splitName(name) {
 // attribution columns. opts: { createDeal, dealTitle, dealAmount, dealStage }.
 //
 // Returns { lead, contact, deal } — or null (not found / cross-org), or
-// throws err.status=409 when the lead is already converted.
+// throws err.status=409 when the lead is already converted, or
+// err.status=400 (INVALID_STAGE) when opts.dealStage isn't on the pipeline.
 async function convertLead(scope, id, actor, opts = {}) {
   const [sf, sv] = scope;
   const client = await pool.connect();
@@ -291,16 +300,59 @@ async function convertLead(scope, id, actor, opts = {}) {
       throw err;
     }
 
+    // Resolve + validate the deal's stage against the org's EFFECTIVE
+    // pipeline up front (before touching companies/contacts) so a bad
+    // caller-supplied stage 400s cleanly instead of writing a deal that then
+    // silently vanishes off the board — the bug this replaces: a hardcoded
+    // 'LEAD' that generic/rin orgs (lowercase stages) never recognized.
+    let dealStage = null;
+    let dealPhase = null;
+    if (opts.createDeal) {
+      const pipeline = await pipelines.getEffectivePipeline(actor.orgId, undefined, {});
+      dealStage = pipeline.default_stage;
+      if (typeof opts.dealStage === 'string' && opts.dealStage.trim()) {
+        const candidate = opts.dealStage.trim().slice(0, 64);
+        if (!dealStages.isValidStage(candidate, pipeline)) {
+          await client.query('ROLLBACK');
+          const err = new Error('Invalid stage');
+          err.status = 400;
+          err.body = { error: 'Invalid stage', code: 'INVALID_STAGE', stage: candidate, valid_stages: pipeline.stages.map((st) => st.id) };
+          throw err;
+        }
+        dealStage = candidate;
+      }
+      dealPhase = dealStages.phaseForStage(dealStage, pipeline);
+    }
+
+    // Company upsert (case-insensitive, org-scoped): a lead's free-text
+    // company_name becomes a real companies row linked to the contact/deal
+    // instead of being stuffed into the contact's notes.
+    let companyId = null;
+    if (lead.company_name) {
+      const existingCompany = await client.query(
+        `SELECT id FROM companies WHERE ${sf} = $1 AND LOWER(name) = LOWER($2) LIMIT 1`,
+        [sv, lead.company_name]
+      );
+      if (existingCompany.rows.length > 0) {
+        companyId = existingCompany.rows[0].id;
+      } else {
+        const createdCompany = await client.query(
+          `INSERT INTO companies (user_id, org_id, name) VALUES ($1, $2, $3) RETURNING id`,
+          [actor.userId, actor.orgId || null, lead.company_name]
+        );
+        companyId = createdCompany.rows[0].id;
+      }
+    }
+
     const { first, last } = splitName(lead.name);
     const contactNotes = [
       `Converted from lead #${lead.id}${lead.source ? ` (source: ${lead.source})` : ''}.`,
-      lead.company_name ? `Company (from lead): ${lead.company_name}` : null,
       lead.notes || null,
     ].filter(Boolean).join('\n');
 
     const contactResult = await client.query(
-      `INSERT INTO contacts (user_id, org_id, first_name, last_name, email, phone, job_title, status, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      `INSERT INTO contacts (user_id, org_id, first_name, last_name, email, phone, job_title, status, notes, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [
         actor.userId,
         actor.orgId || null,
@@ -310,6 +362,7 @@ async function convertLead(scope, id, actor, opts = {}) {
         lead.title || null,
         'prospect',
         contactNotes,
+        companyId,
       ]
     );
     const contact = contactResult.rows[0];
@@ -321,16 +374,17 @@ async function convertLead(scope, id, actor, opts = {}) {
       const amountNum = Number(opts.dealAmount);
       const dealAmount = Number.isFinite(amountNum) && amountNum >= 0 ? amountNum : null;
       const dealResult = await client.query(
-        `INSERT INTO deals (user_id, org_id, contact_id, title, amount, stage, phase, notes, tags)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+        `INSERT INTO deals (user_id, org_id, contact_id, company_id, title, amount, stage, phase, notes, tags)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
         [
           actor.userId,
           actor.orgId || null,
           contact.id,
+          companyId,
           dealTitle,
           dealAmount,
-          typeof opts.dealStage === 'string' && opts.dealStage ? opts.dealStage.slice(0, 64) : 'LEAD',
-          'pre_sale',
+          dealStage,
+          dealPhase,
           `Created by converting lead #${lead.id}.`,
           [],
         ]

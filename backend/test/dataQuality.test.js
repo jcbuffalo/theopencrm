@@ -296,7 +296,7 @@ describe('GET /export.csv', () => {
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/text\/csv/);
     expect(res.headers['content-disposition']).toMatch(/deals-export\.csv/);
-    expect(res.text.split('\r\n')[0]).toBe('ID,Title,Stage,Phase,Deal Type,Amount,Expected Close Date,Contact,Company,Customer,Vendor,PO Number,Hot,Notes,Created At,Line Revenue,Line Cost,Contribution,Margin %');
+    expect(res.text.split('\r\n')[0]).toBe('ID,Title,Stage,Phase,Deal Type,Amount,Expected Close Date,Contact,Company,Customer,Vendor,PO Number,Hot,Next Step,Next Step Date,Notes,Created At,Line Revenue,Line Cost,Contribution,Margin %');
     expect(res.text).toContain('Our deal');
     expect(res.text).not.toContain('Their secret deal');
 

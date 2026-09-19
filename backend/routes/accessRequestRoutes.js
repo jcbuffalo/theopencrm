@@ -17,11 +17,13 @@ const bcryptjs = require('bcryptjs');
 const pool = require('../db');
 const audit = require('../services/audit');
 const email = require('../services/email');
+const emailVerification = require('../services/emailVerification');
 const { validatePassword } = require('../auth');
 const { initialStatusFor, ensureSuperAdmin, isSeedAdmin, seedEmails, isOpenSignup } = require('../services/bootstrapAdmin');
 const { validateBody } = require('../middleware/validate');
 const { createSchema } = require('../schemas/accessRequests');
 const { publicFormLimiter } = require('../middleware/rateLimits');
+const { createSelfServeOrg } = require('../services/selfServeOrg');
 
 /**
  * POST /api/request-access  — public, no auth required
@@ -46,15 +48,22 @@ router.post('/', publicFormLimiter, validateBody(createSchema), async (req, res)
     }
 
     const normalizedEmail = String(rawEmail).trim().toLowerCase();
-    // With OPEN_SIGNUP the account activates immediately, so the response says
-    // "sign in now" — and the SAME response is used for the existing-account
-    // branch below, so the two cases stay indistinguishable (no enumeration).
+    // With OPEN_SIGNUP the account activates immediately — but when
+    // EMAIL_VERIFICATION_REQUIRED=true (prod) it still can't sign in until it
+    // clicks the verification link, so the message says "check your inbox"
+    // instead of "sign in now". Used for BOTH the fresh-signup and the
+    // existing-account branch below, so the two cases stay indistinguishable
+    // (no enumeration).
+    const verificationRequired = process.env.EMAIL_VERIFICATION_REQUIRED === 'true';
     const genericResponse = isOpenSignup()
       ? {
           success: true,
           pending: false,
           active: true,
-          message: 'Your account is ready — you can sign in now.',
+          verification_required: verificationRequired,
+          message: verificationRequired
+            ? 'Check your inbox — we sent a link to verify your email, then sign in.'
+            : 'Your account is ready — you can sign in now.',
         }
       : {
           success: true,
@@ -87,13 +96,13 @@ router.post('/', publicFormLimiter, validateBody(createSchema), async (req, res)
     const newUser = insert.rows[0];
 
     // Personal workspace org so the user has somewhere to land if/when approved.
-    // limits_tier='free' arms the tier caps for new self-serve orgs.
-    const orgResult = await pool.query(
-      `INSERT INTO organizations (name, owner_user_id, limits_tier) VALUES ($1, $2, 'free') RETURNING id`,
-      [`${newUser.name || newUser.email}'s Workspace`, newUser.id]
-    );
-    if (orgResult.rows[0]) {
-      await pool.query('UPDATE users SET org_id = $1, org_role = $2 WHERE id = $3', [orgResult.rows[0].id, 'owner', newUser.id]);
+    // Commercial defaults (free-tier caps, AI trial) live in services/selfServeOrg.js.
+    const newOrg = await createSelfServeOrg(pool, {
+      name: `${newUser.name || newUser.email}'s Workspace`,
+      ownerUserId: newUser.id,
+    });
+    if (newOrg) {
+      await pool.query('UPDATE users SET org_id = $1, org_role = $2 WHERE id = $3', [newOrg.id, 'owner', newUser.id]);
     }
 
     // Seed admins skip approval — bootstrap their admin row so the first sign-in works.
@@ -112,6 +121,29 @@ router.post('/', publicFormLimiter, validateBody(createSchema), async (req, res)
     // Best-effort admin notification — never blocks the response.
     notifyAdminsOfNewRequest({ user: newUser, company, reason }).catch(err => {
       if (req.log) req.log.warn('admin_notify_failed', { error: err.message });
+    });
+
+    // Mint + send the verification email (best-effort — never blocks the
+    // 202). This was the actual P0: signup used to insert email_verified=
+    // FALSE and never mint a token, so EMAIL_VERIFICATION_REQUIRED=true
+    // deployments stranded every password signup at first login with
+    // nothing to click.
+    //
+    // Only for accounts that are actually `active` (OPEN_SIGNUP) — a
+    // pending_approval account can't sign in yet regardless, and the token
+    // is only good for 24h; minting it now would let it expire before an
+    // admin ever gets to approve the request.
+    if (verificationRequired && newUser.status === 'active') {
+      emailVerification.sendVerificationEmail(newUser).catch(err => {
+        if (req.log) req.log.warn('verification_email_failed', { userId: newUser.id, error: err.message });
+      });
+    }
+
+    // Short, human welcome email — the only signup mail before this was the
+    // admin ping. Best-effort; wording adapts to whether the account can
+    // sign in yet (open + no verification needed) or is still pending.
+    emailVerification.sendWelcomeEmail(newUser, { pendingApproval: newUser.status === 'pending_approval' }).catch(err => {
+      if (req.log) req.log.warn('welcome_email_failed', { userId: newUser.id, error: err.message });
     });
 
     res.status(202).json(genericResponse);

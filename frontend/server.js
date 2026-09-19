@@ -56,6 +56,84 @@ const PUBLIC_META = {
     title: 'Data deletion — The Open CRM',
     desc: 'How to export and delete your data from The Open CRM.',
   },
+  '/verify-email': {
+    title: 'Verify your email — The Open CRM',
+    desc: 'Confirm your email address to finish creating your Open CRM account.',
+  },
+  // --- Marketing surfaces (spec 203, Phase 3). Keep in step with
+  // src/marketing/comparisons.js (metaTitle/metaDesc) and src/marketing/verticals.js.
+  '/hubspot-alternative': {
+    title: 'HubSpot alternative — The Open CRM',
+    desc: 'A HubSpot Sales Hub alternative without contact-tier pricing or onboarding fees. Describe how you sell and the CRM builds your pipeline. $15/seat hosted or $0 self-hosted, open source.',
+  },
+  '/salesforce-alternative': {
+    title: 'Salesforce alternative — The Open CRM',
+    desc: 'A Salesforce Sales Cloud alternative for 10-100 person teams: describe how you sell and the CRM proposes your pipeline, fields and automations. No consultants, $15/seat hosted or $0 self-hosted.',
+  },
+  '/pipedrive-alternative': {
+    title: 'Pipedrive alternative — The Open CRM',
+    desc: 'A Pipedrive alternative that stays simple but does not stop at the pipeline: multiple pipelines, automation, account management, and an AI copilot that builds your setup from a description. $15/seat or $0 self-hosted.',
+  },
+  '/zoho-alternative': {
+    title: 'Zoho CRM alternative — The Open CRM',
+    desc: 'A Zoho CRM alternative that configures itself from a description of how you sell. Open source, $15/seat hosted or $0 self-hosted, with an AI copilot and confirm-first automation.',
+  },
+  '/spreadsheet-crm': {
+    title: 'Spreadsheet CRM: move from Google Sheets or Excel — The Open CRM',
+    desc: 'Running sales from a spreadsheet? Describe your columns and tabs and The Open CRM builds the matching pipeline, fields and follow-up rules. Import the sheet as CSV. Free to start, open source.',
+  },
+  '/custom-crm-alternative': {
+    title: 'Custom CRM alternative — The Open CRM',
+    desc: 'Thinking about building your own CRM? The Open CRM configures itself from a description of your process and is open source (AGPL-3.0) if you ever need to go further. $15/seat hosted or $0 self-hosted.',
+  },
+  '/crm-for/b2b-sales': {
+    title: 'CRM for B2B sales teams — The Open CRM',
+    desc: 'Lead to close with the fields you report on and a nudge when a deal goes quiet. Describe how you sell and the CRM builds it. Free to start, open source.',
+  },
+  '/crm-for/saas': {
+    title: 'CRM for SaaS and software companies — The Open CRM',
+    desc: 'Trial, demo, quote, security review, procurement, renewal. A pipeline built for software sales from a plain-English description. Free to start, open source.',
+  },
+  '/crm-for/professional-services': {
+    title: 'CRM for consulting and professional services — The Open CRM',
+    desc: 'Intro, discovery, scoping, SOW, signed. Track engagement value, start date, service line and referrer. Built from your description. Free to start, open source.',
+  },
+  '/crm-for/agency': {
+    title: 'CRM for marketing and creative agencies — The Open CRM',
+    desc: 'Briefs, chemistry calls, pitches, projects and retainers on one board. Describe how your agency sells and the CRM builds it. Free to start, open source.',
+  },
+  '/crm-for/recruiting': {
+    title: 'CRM for recruiting and staffing agencies — The Open CRM',
+    desc: 'Every open role is a deal: sourcing, screening, shortlist, interviews, offer, placement, with a reminder when a client goes quiet. Free to start, open source.',
+  },
+  '/crm-for/commercial-real-estate': {
+    title: 'CRM for commercial real estate brokers — The Open CRM',
+    desc: 'Inquiry, showing, LOI, negotiation, due diligence, closing. Property, square footage, commission and target close tracked. Free to start, open source.',
+  },
+  '/crm-for/construction': {
+    title: 'CRM for construction contractors — The Open CRM',
+    desc: 'Bid invitations to awards: site visit, estimating, submitted, awarded, contract, mobilized, with a reminder before every bid is due. Free to start, open source.',
+  },
+  '/crm-for/distribution': {
+    title: 'CRM for wholesale distributors — The Open CRM',
+    desc: 'Open the account, get the first order, then flag any account that stops reordering. Volume, category, territory and terms tracked. Free to start, open source.',
+  },
+  '/crm-for/equipment-sales': {
+    title: 'CRM for equipment dealers — The Open CRM',
+    desc: 'Inquiry, demo, quote with financing, negotiation, close, delivery. Open quotes get a follow-up rule. Built from your description. Free to start, open source.',
+  },
+  '/crm-for/manufacturer-rep': {
+    title: "CRM for manufacturer's representatives — The Open CRM",
+    desc: 'RFQ, vendor quoting, customer quote, follow up, PO. The rep-agency workflow with RFQ number, vendor, commission rate and ship date tracked. Free to start, open source.',
+  },
+  '/crm-for/field-service': {
+    title: 'CRM for field and technical service companies — The Open CRM',
+    desc: 'Request, site survey, proposal, approved, scheduled, complete, and a rule so nothing approved sits unscheduled. Free to start, open source.',
+  },
+  '/crm-for/nonprofit': {
+    title: 'CRM for nonprofit fundraising — The Open CRM',
+    desc: 'Prospect, cultivation, ask, pledge, gift. A development pipeline with ask amount, gift type and program tracked, and follow-ups on open proposals. Free to start, open source.',
+  },
 };
 
 let indexTemplate = null;

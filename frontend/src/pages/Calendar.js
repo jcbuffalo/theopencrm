@@ -204,7 +204,12 @@ function ItemChip({ item, onClick, compact }) {
 
 export default function Calendar() {
   const navigate = useNavigate();
-  const [view, setView] = useState('week'); // 'week' | 'agenda'
+  // Default to Agenda on phones — the 7-column week grid needs 840px of
+  // horizontal scroll and reads poorly as a first view at 390px. Guarded for
+  // SSR/tests where `window` may be undefined.
+  const [view, setView] = useState(() => (
+    typeof window !== 'undefined' && window.innerWidth < 768 ? 'agenda' : 'week'
+  )); // 'week' | 'agenda'
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [items, setItems] = useState(null); // null = loading
   const [error, setError] = useState('');

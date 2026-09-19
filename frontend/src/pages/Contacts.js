@@ -4,12 +4,13 @@
 // later. See the LICENSE file at the repository root, or
 // https://www.gnu.org/licenses/agpl-3.0.html. Distributed WITHOUT ANY WARRANTY.
 
-import React, { useEffect, useState, useMemo } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
+import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import api, { downloadBlob } from '../api';
 import Nav from '../components/Nav';
 import DataTable from '../components/DataTable';
 import ContactForm from '../components/ContactForm';
+import ContactPanel from '../components/ContactPanel';
 import DuplicateWarningToast from '../components/DuplicateWarningToast';
 import TierLimitToast from '../components/TierLimitToast';
 import EmailComposerModal from '../components/EmailComposerModal';
@@ -78,7 +79,16 @@ const INLINE_SELECT =
 export default function Contacts() {
   const navigate = useNavigate();
   const location = useLocation();
+  const params = useParams();
   const [contacts, setContacts] = useState([]);
+  // Companies feed the contact drawer's company line (one fetch per page).
+  const [companies, setCompanies] = useState([]);
+  // The open contact record (ContactPanel drawer). Deep-linkable two ways:
+  // /contacts/:id (App.js routes it here) and ?contactId=N (chips / palette).
+  const [selectedContactId, setSelectedContactId] = useState(null);
+  // When "Edit details" in the drawer hands off to the inline form we
+  // remember the id so a successful save re-opens the record.
+  const returnToPanelRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -109,6 +119,31 @@ export default function Contacts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search]);
 
+  // Quick-add (CommandPalette "New contact" / nav "+" button) → ?new=1 opens
+  // the create form, same as clicking the page's own "New contact" button.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('new') === '1') { setEditingId(null); setShowForm(true); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
+
+  // Record deep link: /contacts/:id wins, then ?contactId=N. Leaving both
+  // (back button, drawer close) closes the drawer.
+  useEffect(() => {
+    const sp = new URLSearchParams(location.search);
+    const fromPath = params.id ? Number(params.id) : null;
+    const fromQuery = sp.get('contactId') ? Number(sp.get('contactId')) : null;
+    const id = Number.isInteger(fromPath) && fromPath > 0 ? fromPath
+      : Number.isInteger(fromQuery) && fromQuery > 0 ? fromQuery : null;
+    setSelectedContactId(id);
+  }, [params.id, location.search]);
+
+  const openContact = (id) => navigate(`/contacts/${id}`);
+  const closeContact = () => {
+    setSelectedContactId(null);
+    if (params.id || new URLSearchParams(location.search).has('contactId')) navigate('/contacts');
+  };
+
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [members, setMembers] = useState([]);
 
@@ -123,6 +158,9 @@ export default function Contacts() {
     fetchContacts();
     fetchMembers();
     fetchGoneQuiet();
+    api.get('/companies')
+      .then((r) => setCompanies(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setCompanies([]));
   }, []);
 
   const fetchContacts = async () => {
@@ -206,12 +244,38 @@ export default function Contacts() {
 
   // A create may return a soft warning.possibleDuplicates on its 201 — the
   // record IS saved; we just surface a non-blocking review toast.
+  //
+  // Land on what you just created: `created` is only passed by ContactForm
+  // on a fresh create (an edit-save calls onSuccess() with no argument), so
+  // reopening the form in edit mode for the new id only fires there — an
+  // edit-save still closes the form exactly as before.
   const handleFormSuccess = (created) => {
     fetchContacts();
-    handleFormClose();
     if (created?.warning?.possibleDuplicates?.length) {
       setDupWarning(created.warning);
     }
+    if (created?.id) {
+      setEditingId(created.id);
+      setShowForm(true);
+    } else {
+      handleFormClose();
+      // Came from the drawer's "Edit details"? Go back to the record.
+      if (returnToPanelRef.current) {
+        const id = returnToPanelRef.current;
+        returnToPanelRef.current = null;
+        openContact(id);
+      }
+    }
+  };
+
+  // Drawer → inline form hand-off. The Drawer would cover the form, so close
+  // it, open the form, and remember to come back on save.
+  const editFromPanel = (contact) => {
+    returnToPanelRef.current = contact.id;
+    closeContact();
+    setEditingId(contact.id);
+    setShowForm(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // Server-authoritative CSV download of the current list, carrying the
@@ -269,11 +333,24 @@ export default function Contacts() {
     );
   };
 
+  // The name cell opens the record. A real <button> (not a row onClick) so
+  // the inline cadence selects and row actions never fight it for the tap;
+  // ≥44px tall on phones via min-h so it's a comfortable target.
+  const renderName = (c) => (
+    <button
+      type="button"
+      onClick={() => openContact(c.id)}
+      className="inline-flex min-h-[44px] items-center text-left font-medium text-gray-900 hover:text-brand-blue hover:underline md:min-h-0"
+      aria-label={`Open ${c.first_name || ''} ${c.last_name || ''}`.trim()}
+    >
+      {c.first_name} {c.last_name}
+    </button>
+  );
+
   const columns = [
-    { key: 'first_name', label: 'First name', width: '14%' },
-    { key: 'last_name', label: 'Last name', width: '14%' },
-    { key: 'email', label: 'Email', width: '22%' },
-    { key: 'job_title', label: 'Job title', width: '14%' },
+    { key: 'first_name', label: 'Name', width: '20%', render: renderName },
+    { key: 'email', label: 'Email', width: '24%' },
+    { key: 'job_title', label: 'Job title', width: '20%' },
     {
       key: 'status', label: 'Status', width: '8%',
       render: (c) => c.status ? <StatusBadge tone={STATUS_TONE[c.status] || 'neutral'} label={c.status} className="capitalize" /> : null,
@@ -369,9 +446,13 @@ export default function Contacts() {
                 <ul className="mt-2 divide-y divide-danger-100">
                   {goneQuiet.map((c) => (
                     <li key={c.id} className="py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <span className="font-medium text-gray-900">
+                      <button
+                        type="button"
+                        onClick={() => openContact(c.id)}
+                        className="font-medium text-gray-900 hover:text-brand-blue hover:underline text-left"
+                      >
                         {c.first_name} {c.last_name}
-                      </span>
+                      </button>
                       <span className="text-xs font-semibold">
                         {c.never_touched ? 'never touched' : `${c.days_overdue}d overdue`}
                       </span>
@@ -468,6 +549,7 @@ export default function Contacts() {
               ) : null,
             }}
             rowActions={[
+              { label: 'Open', onClick: (contact) => openContact(contact.id) },
               {
                 label: 'Email',
                 // Only enabled when the contact has an email on file. The
@@ -483,6 +565,16 @@ export default function Contacts() {
             ]}
           />
         </div>
+
+        {selectedContactId && (
+          <ContactPanel
+            contactId={selectedContactId}
+            companies={companies}
+            onClose={closeContact}
+            onChanged={() => { fetchContacts(); fetchGoneQuiet(); }}
+            onEdit={editFromPanel}
+          />
+        )}
 
         <EmailComposerModal
           open={!!emailContact}

@@ -41,6 +41,11 @@ const leadRoutes = require('../routes/leadRoutes');
 const leadFormRoutes = require('../routes/leadFormRoutes');
 const featureFlags = require('../services/featureFlags');
 const audit = require('../services/audit');
+// convertLead resolves the deal's stage via the org's EFFECTIVE pipeline
+// (services/pipelines.js) — clear its 30s in-memory cache between tests so
+// every test hits (and can assert on) the same fetchProfile/fetchDefaultRow
+// queries instead of a warm cache from an earlier test skipping them.
+const pipelines = require('../services/pipelines');
 const { requireFeature } = require('../middleware/featureGate');
 const { leadCaptureLimiter } = require('../middleware/rateLimits');
 const { generateToken, AUTH_COOKIE_NAME } = require('../auth');
@@ -104,6 +109,7 @@ beforeEach(() => {
   mockPool.connect.mockReset();
   vi.spyOn(featureFlags, 'hasFeature').mockResolvedValue(true);
   vi.spyOn(audit, 'fromReq').mockImplementation(() => Promise.resolve());
+  pipelines._clearCache();
 });
 
 // ---------------------------------------------------------------------------
@@ -196,14 +202,19 @@ function mockClient(responses) {
 describe('POST /api/leads/:id/convert', () => {
   test('creates contact + deal and stamps converted_* in one transaction', async () => {
     const contact = { id: 301, first_name: 'Ada', last_name: 'Lovelace', org_id: ORG_ID };
-    const deal = { id: 401, title: 'Analytical Engines Ltd — Ada Lovelace', stage: 'LEAD', contact_id: 301 };
+    const deal = { id: 401, title: 'Analytical Engines Ltd — Ada Lovelace', stage: 'lead', contact_id: 301 };
     const client = mockClient([
       { rows: [leadRow()] },                                            // SELECT ... FOR UPDATE
+      { rows: [] },                                                     // SELECT companies (no match)
+      { rows: [{ id: 501 }] },                                          // INSERT INTO companies
       { rows: [contact] },                                              // INSERT contact
       { rows: [deal] },                                                 // INSERT deal
       { rows: [leadRow({ status: 'converted', converted_contact_id: 301, converted_deal_id: 401 })] }, // UPDATE lead
     ]);
-    mockPool.query.mockResolvedValueOnce(authRow());                    // auth
+    mockPool.query
+      .mockResolvedValueOnce(authRow())                                 // auth
+      .mockResolvedValueOnce({ rows: [{ profile: 'generic' }] })        // pipelines.fetchProfile
+      .mockResolvedValueOnce({ rows: [] });                             // pipelines.fetchDefaultRow (no custom pipeline)
     mockPool.connect.mockResolvedValueOnce(client);
 
     const res = await request(buildAuthedApp())
@@ -220,16 +231,51 @@ describe('POST /api/leads/:id/convert', () => {
     const sqls = client.query.mock.calls.map((c) => c[0]);
     expect(sqls[0]).toBe('BEGIN');
     expect(sqls.find((s) => s.includes('FOR UPDATE'))).toContain('org_id = $2');
+    expect(sqls.some((s) => s.includes('INSERT INTO companies'))).toBe(true);
     expect(sqls.some((s) => s.includes('INSERT INTO contacts'))).toBe(true);
     expect(sqls.some((s) => s.includes('INSERT INTO deals'))).toBe(true);
     expect(sqls.some((s) => s.includes("status = 'converted'"))).toBe(true);
     expect(sqls[sqls.length - 1]).toBe('COMMIT');
     expect(client.release).toHaveBeenCalled();
+
+    // The deal is staged with the org's EFFECTIVE default stage (generic
+    // profile → lowercase 'lead'), not a hardcoded 'LEAD' the board would
+    // never recognize.
+    const [, dealParams] = client.query.mock.calls.find(([sql]) => sql.includes('INSERT INTO deals'));
+    expect(dealParams).toContain('lead');
+    // Company id (from the upsert) flows onto both the contact and the deal.
+    const [, contactParams] = client.query.mock.calls.find(([sql]) => sql.includes('INSERT INTO contacts'));
+    expect(contactParams).toContain(501);
+    expect(dealParams).toContain(501);
+  });
+
+  test('reuses an existing company (case-insensitive match) instead of creating a duplicate', async () => {
+    const client = mockClient([
+      { rows: [leadRow()] },
+      { rows: [{ id: 777 }] },                                          // SELECT companies → match found
+      { rows: [{ id: 302, first_name: 'Ada', last_name: 'Lovelace' }] }, // INSERT contact
+      { rows: [leadRow({ status: 'converted', converted_contact_id: 302 })] },
+    ]);
+    mockPool.query.mockResolvedValueOnce(authRow());
+    mockPool.connect.mockResolvedValueOnce(client);
+
+    const res = await request(buildAuthedApp())
+      .post(`/api/leads/${LEAD_ID}/convert`).set('Cookie', authCookie())
+      .send({});
+    expect(res.status).toBe(200);
+
+    const sqls = client.query.mock.calls.map((c) => c[0]);
+    expect(sqls.some((s) => s.includes('SELECT id FROM companies'))).toBe(true);
+    expect(sqls.some((s) => s.includes('INSERT INTO companies'))).toBe(false);
+    const [, contactParams] = client.query.mock.calls.find(([sql]) => sql.includes('INSERT INTO contacts'));
+    expect(contactParams).toContain(777);
   });
 
   test('convert without createDeal creates no deal row', async () => {
     const client = mockClient([
       { rows: [leadRow()] },
+      { rows: [] },                                                     // SELECT companies (no match)
+      { rows: [{ id: 501 }] },                                          // INSERT companies
       { rows: [{ id: 302, first_name: 'Ada', last_name: 'Lovelace' }] },
       { rows: [leadRow({ status: 'converted', converted_contact_id: 302 })] },
     ]);
@@ -243,6 +289,30 @@ describe('POST /api/leads/:id/convert', () => {
     expect(res.body.deal).toBeNull();
     const sqls = client.query.mock.calls.map((c) => c[0]);
     expect(sqls.some((s) => s.includes('INSERT INTO deals'))).toBe(false);
+    // No createDeal → the pipeline is never even resolved (no extra pool
+    // query beyond auth).
+    expect(mockPool.query).toHaveBeenCalledTimes(1);
+  });
+
+  test('an invalid caller-supplied dealStage 400s and rolls back, nothing written', async () => {
+    const client = mockClient([
+      { rows: [leadRow()] }, // SELECT ... FOR UPDATE
+    ]);
+    mockPool.query
+      .mockResolvedValueOnce(authRow())
+      .mockResolvedValueOnce({ rows: [{ profile: 'generic' }] })
+      .mockResolvedValueOnce({ rows: [] });
+    mockPool.connect.mockResolvedValueOnce(client);
+
+    const res = await request(buildAuthedApp())
+      .post(`/api/leads/${LEAD_ID}/convert`).set('Cookie', authCookie())
+      .send({ createDeal: true, dealStage: 'NOT_A_REAL_STAGE' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_STAGE');
+    const sqls = client.query.mock.calls.map((c) => c[0]);
+    expect(sqls).toContain('ROLLBACK');
+    expect(sqls.some((s) => s.includes('INSERT INTO'))).toBe(false);
   });
 
   test('already-converted lead → 409 and rollback', async () => {

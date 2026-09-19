@@ -58,6 +58,9 @@ const playbooks = require('../services/playbooks');
 // Plugin trigger engine (migration 164) — fire-and-forget post-commit event
 // dispatch to active plugins. emit() never throws and never blocks.
 const pluginEvents = require('../services/pluginEvents');
+// One-motion create: company / contact find-or-create by name, shared with
+// the chat copilot's deal.create apply (routes/aiRoutes.js).
+const recordUpsert = require('../services/recordUpsert');
 
 // Fire deal_stage playbooks for a deal that just ENTERED `newStage`.
 // Best-effort by design — a playbook failure must NEVER break the stage
@@ -201,7 +204,7 @@ router.get('/export.csv', async (req, res) => {
         co.name AS company_name,
         cu.name AS customer_name,
         v.name  AS vendor_name,
-        d.po_number, d.hot_flag, d.notes, d.created_at,
+        d.po_number, d.hot_flag, d.next_step, d.next_step_date, d.notes, d.created_at,
         li.revenue_cents, li.cost_cents
       FROM deals d
       LEFT JOIN contacts c   ON d.contact_id   = c.id
@@ -268,6 +271,8 @@ router.get('/export.csv', async (req, res) => {
       { key: 'vendor_name',         label: 'Vendor' },
       { key: 'po_number',           label: 'PO Number' },
       { key: 'hot_flag',            label: 'Hot' },
+      { key: 'next_step',           label: 'Next Step' },
+      { key: 'next_step_date',      label: 'Next Step Date' },
       { key: 'notes',               label: 'Notes' },
       { key: 'created_at',          label: 'Created At' },
       { key: 'line_revenue',        label: 'Line Revenue' },
@@ -308,7 +313,8 @@ router.post('/', validateBody(dealSchemas.createSchema), async (req, res) => {
       title, contact_id, company_id, customer_id, vendor_id, salesman_id, vertical,
       description, amount, stage, phase, deal_type, expected_close_date, notes, tags, hot_flag,
       po_number, ship_to, poc_name, poc_email, poc_phone, target_ship_date,
-      external_ref, custom_fields, owner_user_id,
+      external_ref, custom_fields, owner_user_id, next_step, next_step_date,
+      company_name, contact_name, contact_email,
     } = req.body;
     // deal_type (spec 201): 'default' unless the org has a pipeline for the
     // requested type; an unknown type is a 400 listing the valid ones.
@@ -350,15 +356,38 @@ router.post('/', validateBody(dealSchemas.createSchema), async (req, res) => {
 
     await client.query('BEGIN');
 
+    // One-motion create (Wave 3): a typed company / contact name with no id
+    // is found-or-created inside this same transaction via the shared
+    // services/recordUpsert.js path (the chat copilot's deal.create apply
+    // uses the identical helpers). Explicit ids always win. On a generic
+    // profile the company doubles as the customer (customer_id) — that is
+    // what the Kanban card and Account 360 read.
+    const [sf, sv] = qs(req);
+    const actor = { sf, sv, userId: req.userId, orgId: req.orgId };
+    let finalCompanyId = company_id || null;
+    let finalCustomerId = customer_id || null;
+    let finalContactId = contact_id || null;
+    let createdCompany = false;
+    let createdContact = false;
+    if (!finalCompanyId && company_name) {
+      const co = await recordUpsert.findOrCreateCompany(client, actor, company_name);
+      if (co) { finalCompanyId = co.id; createdCompany = co.created; if (!finalCustomerId) finalCustomerId = co.id; }
+    }
+    if (!finalContactId && (contact_name || contact_email)) {
+      const ct = await recordUpsert.findOrCreateContact(client, actor, { name: contact_name, email: contact_email, companyId: finalCompanyId });
+      if (ct) { finalContactId = ct.id; createdContact = ct.created; }
+    }
+
     const result = await client.query(
       `INSERT INTO deals (user_id, org_id, contact_id, company_id, customer_id, vendor_id, salesman_id, vertical,
                           title, description, amount, stage, phase, deal_type, expected_close_date, notes, tags, hot_flag,
                           po_number, ship_to, poc_name, poc_email, poc_phone, target_ship_date, external_ref,
-                          created_by, updated_by, last_activity_at, custom_fields, owner_user_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$26,CURRENT_TIMESTAMP,$27::jsonb,$28) RETURNING *`,
+                          created_by, updated_by, last_activity_at, custom_fields, owner_user_id,
+                          next_step, next_step_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$26,CURRENT_TIMESTAMP,$27::jsonb,$28,$29,$30) RETURNING *`,
       [
         req.userId, req.orgId || null,
-        contact_id || null, company_id || null, customer_id || null, vendor_id || null,
+        finalContactId, finalCompanyId, finalCustomerId, vendor_id || null,
         salesman_id || req.userId, vertical || null,
         title, description || null, amount || null, finalStage, finalPhase, dealType,
         expected_close_date || null, notes || null, tags || [], !!hot_flag,
@@ -367,6 +396,7 @@ router.post('/', validateBody(dealSchemas.createSchema), async (req, res) => {
         req.userId,
         JSON.stringify(custom_fields || {}),
         owner_user_id || null,
+        next_step || null, next_step_date || null,
       ]
     );
 
@@ -536,7 +566,13 @@ router.put('/:id', validateBody(dealSchemas.updateSchema), async (req, res) => {
       notes, tags, hot_flag, lost_reason,
       po_number, ship_to, poc_name, poc_email, poc_phone, target_ship_date, actual_ship_date,
       release_status, hold_reason, custom_fields, owner_user_id,
+      next_step, next_step_date,
     } = req.body;
+    // Next step (migration 172) uses explicit-key semantics: the column is
+    // written whenever the key is PRESENT in the body (null clears it), and
+    // left alone when absent — COALESCE can't express "clear this".
+    const hasNextStep = Object.prototype.hasOwnProperty.call(req.body, 'next_step');
+    const hasNextStepDate = Object.prototype.hasOwnProperty.call(req.body, 'next_step_date');
 
     // A stage supplied on a full update is checked against the pipeline for
     // the deal's type, same as create / PATCH stage. Changing deal_type
@@ -635,6 +671,8 @@ router.put('/:id', validateBody(dealSchemas.updateSchema), async (req, res) => {
         custom_fields = CASE WHEN $31::jsonb IS NULL THEN custom_fields ELSE custom_fields || $31::jsonb END,
         owner_user_id = COALESCE($32, owner_user_id),
         deal_type = COALESCE($33, deal_type),
+        next_step = CASE WHEN $34::boolean THEN $35 ELSE next_step END,
+        next_step_date = CASE WHEN $36::boolean THEN $37::date ELSE next_step_date END,
         last_activity_at = CURRENT_TIMESTAMP,
         updated_at = CURRENT_TIMESTAMP
        WHERE id = $29 AND ${sf} = $30 RETURNING *`,
@@ -648,6 +686,8 @@ router.put('/:id', validateBody(dealSchemas.updateSchema), async (req, res) => {
         custom_fields ? JSON.stringify(custom_fields) : null,
         owner_user_id || null,
         finalDealType,
+        hasNextStep, hasNextStep ? (next_step || null) : null,
+        hasNextStepDate, hasNextStepDate ? (next_step_date || null) : null,
       ]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Deal not found' });

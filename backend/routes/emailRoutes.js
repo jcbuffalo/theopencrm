@@ -36,6 +36,8 @@ const crypto = require('crypto');
 const { authMiddleware } = require('../auth');
 const pool = require('../db');
 const email = require('../services/email');
+// Per-org From: display name + Reply-To (Settings → Workspace).
+const senderIdentity = require('../services/senderIdentity');
 const audit = require('../services/audit');
 const { validateBody } = require('../middleware/validate');
 const {
@@ -532,29 +534,36 @@ router.post('/send', validateBody(sendSchema), async (req, res) => {
       senderRow = r.rows[0] || {};
     } catch { /* non-fatal */ }
 
-    let orgName = null;
-    if (req.orgId) {
-      try {
-        const r = await pool.query(`SELECT name FROM organizations WHERE id = $1`, [req.orgId]);
-        orgName = r.rows[0]?.name || null;
-      } catch { /* non-fatal */ }
-    }
+    // Org sender identity (services/senderIdentity.js): the owner-set From:
+    // display name + Reply-To. Falls back to the org name ("<Org> via …")
+    // and to the sending user's own address as Reply-To.
+    const identity = await senderIdentity.getSenderIdentity(req.orgId, { fallbackReplyTo: senderRow.email || null });
 
     // Send. The email service handles its own graceful fallback to console
     // when neither SMTP nor SendGrid is configured — we get { ok, kind, messageId }
     // back either way and update provider_message_id accordingly. Failure
     // here is logged but does NOT roll back the row — the spec wants a
     // record either way (matches adminNotify + SMS pattern).
+    //
+    // `transportKind` starts at the transport that WOULD be used (not a bare
+    // 'console' default) so a real send failure on a CONFIGURED transport
+    // (e.g. SendGrid 401) still reports the true transport + a delivery_error
+    // — previously a thrown sendMail left transportKind at its 'console'
+    // default, so the frontend rendered "email service is not configured"
+    // for a failure that had nothing to do with configuration.
     let providerMessageId = null;
-    let transportKind = 'console';
+    let transportKind = email.transportKind();
+    let deliveryError = null;
     try {
       const result = await email.sendMail({
         to: to_email,
-        replyTo: senderRow.email || undefined,
+        replyTo: identity.replyTo || undefined,
         subject: resolvedSubject,
         html: htmlBody,
-        text: resolvedBody,
-        fromName: orgName,
+        text: `${resolvedBody}\n\n--\nUnsubscribe from these messages: ${unsubUrl}`,
+        fromName: identity.fromName,
+        fromNameVerbatim: identity.fromNameIsCustom,
+        listUnsubscribe: unsubUrl,
       });
       transportKind = result.kind;
       providerMessageId = result.messageId || null;
@@ -567,6 +576,7 @@ router.post('/send', validateBody(sendSchema), async (req, res) => {
     } catch (sendErr) {
       // Transport failed (e.g. SendGrid 401). Per spec, don't fail the
       // request — record the row and log. This matches services/adminNotify.js.
+      deliveryError = sendErr.message;
       if (req.log) req.log.warn('email_send_transport_failed', { sendId, error: sendErr.message });
       else console.warn('Email transport failed (recorded anyway):', sendErr.message);
     }
@@ -593,6 +603,8 @@ router.post('/send', validateBody(sendSchema), async (req, res) => {
       send_id: sendId,
       transport: transportKind,
       configured: email.isConfigured(),
+      delivered: !deliveryError,
+      ...(deliveryError ? { delivery_error: deliveryError } : {}),
     });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch { /* */ }

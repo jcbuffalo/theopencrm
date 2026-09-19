@@ -7,7 +7,7 @@ the route handler implements each via `buildChatToolRunner(req)` in
 `input_schema`; the org scope is always injected server-side via `qs(req)` —
 never trusted from the model.
 
-52 tools live in seven groups:
+53 tools live in seven groups:
 
 - **CRM-action tools (8)** — surface deals, tasks, attention, at-risk accounts,
   drafts. Always available to every authenticated user in any mode.
@@ -25,11 +25,11 @@ never trusted from the model.
 - **Super-admin diagnostic tools (3)** — cross-tenant triage. Same schema for
   everyone, but each handler returns `{ error: 'not_authorized', code:
   'NOT_AUTHORIZED' }` unless `req.adminRole === 'super_admin'`.
-- **Write-action tools (17, confirm-first / Spec 200 + control plane)** — the
-  `propose_*` family, covering every module: deals, tasks, activities,
-  contacts, companies, leads, cases, meetings, account lifecycle stage, record
-  owners, sequence enrollment, playbook runs, feature flags, extension
-  installs + run-mode changes (`propose_install_extension` w/ `autonomous?`,
+- **Write-action tools (18, confirm-first / Spec 200 + control plane)** — the
+  `propose_*` family, covering every module: deals (update + create), tasks,
+  activities, contacts, companies, leads, cases, meetings, account lifecycle
+  stage, record owners, sequence enrollment, playbook runs, feature flags,
+  extension installs + run-mode changes (`propose_install_extension` w/ `autonomous?`,
   `propose_set_extension_mode`) — plus the
   **cohort harness** (`propose_cohort_action`) for bulk actions over a
   segment's current members, and the **chat plugin builder**
@@ -133,7 +133,11 @@ Response shape:
 | Example prompt | "What's the state of deal 42? Any open issues?" |
 
 Returns `{ deal, vendor_quotes: [...], open_issues: [...], last_activities:
-[...] }`. The deal block carries the same fields as `list_deals` + `notes`.
+[...] }`. The deal block carries the same fields as `list_deals` + `notes` +
+`next_step` / `next_step_date` (the rep's committed next action, migration 172;
+`null` when none is set). The deal drawer's "Ask the copilot" button opens
+`/chat?seed=deal&deal_id=N`, which pre-sends one grounded turn that leans on
+this tool.
 
 ### 3. `list_overdue_tasks`
 
@@ -558,7 +562,7 @@ incidents — point at the most-frequent failing `event` first.
 
 ---
 
-## Write-action tools (15 — confirm-first, Spec 200 + control plane)
+## Write-action tools (16 — confirm-first, Spec 200 + control plane)
 
 These tools **never write to the database.** Each one validates its inputs,
 ownership-checks any referenced ids against the caller's org, and returns a
@@ -569,7 +573,8 @@ etc.) to resolve names → ids before proposing. All schemas set
 
 | Tool | Signature (all optional unless noted) | Proposes |
 |---|---|---|
-| `propose_update_deal` | `(deal_id: int req, stage?, amount?, hot_flag?, expected_close_date?, append_note?)` | Move stage / set amount / flag hot / set close date / append a note |
+| `propose_update_deal` | `(deal_id: int req, stage?, amount?, hot_flag?, expected_close_date?, next_step?, next_step_date?, append_note?)` | Move stage / set amount / flag hot / set close date / set the committed next step + due date (migration 172) / append a note |
+| `propose_create_deal` | `(title: string req, company?, contact_name?, contact_email?, amount?, close_date?, stage?, deal_type?, notes?)` | Create a new deal. `company`/`contact_name`/`contact_email` are find-or-create by name (case-insensitive for the company; by email then name for the contact) — no ids required. `stage` accepts an id or a label and is validated against the org's pipeline for `deal_type` (re-validated again at apply); omitted, it defaults to that pipeline's first stage. `deal_type` (optional) picks which of the org's pipelines to file it under |
 | `propose_create_task` | `(title: string req, due_date?, priority?, deal_id?, contact_id?)` | Create a task, optionally attached to a deal/contact |
 | `propose_log_activity` | `(type: string req, deal_id?, contact_id?, title?, note?, activity_date?)` | Log a call/email/meeting/note/demo |
 | `propose_upsert_contact` | `(id? → update else create, first_name?, last_name?, email?, phone?, company_id?, job_title?, status?)` | Create or update a contact |
@@ -645,7 +650,7 @@ actions additionally need an org).
 
 | Action | Flag re-checked | Who can apply |
 |---|---|---|
-| `deal.update`, `task.create`, `activity.create`, `contact.*`, `company.create/update`, `meeting.create` | — | any member |
+| `deal.update`, `deal.create`, `task.create`, `activity.create`, `contact.*`, `company.create/update`, `meeting.create` | — | any member |
 | `company.assign_owner`, `deal.assign_owner` | — | any member (owner must be in-org) |
 | `lead.create`, `lead.assign_owner` | `leads_enabled` | any member |
 | `case.create`, `company.set_lifecycle_stage`, `playbook.run` | `customer_success_enabled` | any member |

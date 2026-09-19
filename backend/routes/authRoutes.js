@@ -36,6 +36,7 @@ const { ensureSuperAdmin, initialStatusFor, isSeedAdmin, ensureOrgProfile } = re
 const featureFlags = require('../services/featureFlags');
 // Per-org pipeline stages (migration 155) — served on /auth/me as org_pipeline.
 const pipelines = require('../services/pipelines');
+const { createSelfServeOrg } = require('../services/selfServeOrg');
 
 // ---------------------------------------------------------------------------
 // Session-issuing helper. Centralized so /login, /google-signin, /register,
@@ -139,15 +140,15 @@ router.post('/register', async (req, res) => {
     const newUser = result.rows[0];
 
     // Auto-create personal workspace org for everyone (also for pending users —
-    // when they're approved they'll already have a workspace).
-    // limits_tier='free' arms the seat/record caps (services/tierLimits.js)
-    // for NEW self-serve orgs only — existing orgs stay NULL (uncapped).
-    const orgResult = await pool.query(
-      `INSERT INTO organizations (name, owner_user_id, limits_tier) VALUES ($1, $2, 'free') ON CONFLICT DO NOTHING RETURNING id`,
-      [`${newUser.name || newUser.email}'s Workspace`, newUser.id]
-    );
-    if (orgResult.rows[0]) {
-      await pool.query('UPDATE users SET org_id = $1, org_role = $2 WHERE id = $3', [orgResult.rows[0].id, 'owner', newUser.id]);
+    // when they're approved they'll already have a workspace). Commercial
+    // defaults (free-tier caps, AI trial) live in services/selfServeOrg.js.
+    const newOrg = await createSelfServeOrg(pool, {
+      name: `${newUser.name || newUser.email}'s Workspace`,
+      ownerUserId: newUser.id,
+      onConflictDoNothing: true,
+    });
+    if (newOrg) {
+      await pool.query('UPDATE users SET org_id = $1, org_role = $2 WHERE id = $3', [newOrg.id, 'owner', newUser.id]);
     }
 
     // Lazy super-admin bootstrap — first time a seed admin registers.
@@ -402,13 +403,9 @@ router.post('/google-signin', async (req, res) => {
       );
       user = createResult.rows[0];
 
-      // limits_tier='free' arms the tier caps for new self-serve orgs.
-      const orgResult = await pool.query(
-        `INSERT INTO organizations (name, owner_user_id, limits_tier) VALUES ($1, $2, 'free') RETURNING id`,
-        [`${googleName}'s Workspace`, user.id]
-      );
-      if (orgResult.rows[0]) {
-        await pool.query('UPDATE users SET org_id = $1, org_role = $2 WHERE id = $3', [orgResult.rows[0].id, 'owner', user.id]);
+      const newOrg = await createSelfServeOrg(pool, { name: `${googleName}'s Workspace`, ownerUserId: user.id });
+      if (newOrg) {
+        await pool.query('UPDATE users SET org_id = $1, org_role = $2 WHERE id = $3', [newOrg.id, 'owner', user.id]);
       }
     }
 
@@ -516,8 +513,7 @@ router.post('/resend-verification', async (req, res) => {
     if (!email || !email.includes('@')) {
       return res.status(400).json({ success: false, error: 'email required' });
     }
-    const crypto = require('crypto');
-    const emailService = require('../services/email');
+    const emailVerification = require('../services/emailVerification');
     const u = await pool.query(
       'SELECT id, email, name, email_verified FROM users WHERE LOWER(email) = $1',
       [email]
@@ -527,28 +523,12 @@ router.post('/resend-verification', async (req, res) => {
       return res.json({ success: true });
     }
     const userRow = u.rows[0];
-    const token = crypto.randomBytes(32).toString('hex');
-    await pool.query(
-      `UPDATE users
-          SET email_verification_token = $1,
-              email_verification_expires = NOW() + INTERVAL '24 hours',
-              updated_at = NOW()
-        WHERE id = $2`,
-      [token, userRow.id]
-    );
-    const frontendUrl = process.env.FRONTEND_URL || 'https://app.theopencrm.com';
-    const verifyUrl = `${frontendUrl}/verify-email?token=${token}`;
-    if (emailService.isConfigured && emailService.isConfigured()) {
-      emailService.sendMail({
-        to: userRow.email,
-        subject: 'Verify your email — The Open CRM',
-        html: `<p>Hi ${userRow.name || ''},</p>
-               <p>Click the link below to confirm your email so you can sign in:</p>
-               <p><a href="${verifyUrl}">${verifyUrl}</a></p>
-               <p>This link expires in 24 hours. If you didn't request this, ignore the message.</p>`,
-        text: `Verify your email: ${verifyUrl}`,
-      }).catch(() => { /* logged inside sendMail */ });
-    }
+    // Shared with the signup handler (routes/accessRequestRoutes.js) so the
+    // token-minting + mail shape can never drift between the two call sites.
+    // sendVerificationEmail catches its own send errors internally (only a
+    // real DB failure on the mint would throw here), so this stays awaited
+    // the same way the original inline mint used to be.
+    await emailVerification.sendVerificationEmail(userRow);
     audit.fromReq(req, { event: 'email.verification.resend', actorUserId: userRow.id, meta: { email } });
     res.json({ success: true });
   } catch (err) {
@@ -742,6 +722,41 @@ router.get('/me', authMiddleware, async (req, res) => {
         }
       }
     } catch { org_pipeline = null; org_pipelines = null; }
+    // Does this org have any post-sale reality yet — a company past
+    // "prospect" (type customer / lifecycle stage moved on) or a won deal?
+    // The nav hides the empty Customers group until it does (Wave 3 of the
+    // 2026-09-18 review). One cheap EXISTS round-trip; null on any failure
+    // (or no org) so the frontend keeps showing everything — the same
+    // "unknown means on" posture org_features takes.
+    let org_has_customers = null;
+    if (u.org_id) {
+      try {
+        const hc = await pool.query(
+          `SELECT (
+             EXISTS (SELECT 1 FROM companies
+                      WHERE org_id = $1
+                        AND (type = 'customer' OR COALESCE(lifecycle_stage, 'prospect') <> 'prospect'))
+             OR EXISTS (SELECT 1 FROM deals
+                      WHERE org_id = $1
+                        AND (stage IN ('CLOSED_WON', 'closed_won', 'CLOSED', 'CLOSED_PAID') OR closed_date IS NOT NULL))
+             -- Custom pipelines (migrations 155/156): a deal sitting on any
+             -- stage its pipeline marks is_won.
+             OR EXISTS (SELECT 1
+                          FROM deals d
+                          JOIN pipelines p
+                            ON p.org_id = d.org_id
+                           AND (p.deal_type = d.deal_type OR (p.is_default = TRUE AND COALESCE(d.deal_type, 'default') = 'default'))
+                          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.stage_defs, '[]'::jsonb)) st
+                         WHERE d.org_id = $1
+                           AND st->>'id' = d.stage
+                           AND COALESCE((st->>'is_won')::boolean, FALSE))
+           ) AS has_customers`,
+          [u.org_id]
+        );
+        const v = hc && hc.rows && hc.rows[0] ? hc.rows[0].has_customers : null;
+        org_has_customers = typeof v === 'boolean' ? v : null;
+      } catch { org_has_customers = null; }
+    }
     res.json({
       success: true,
       user: {
@@ -758,6 +773,7 @@ router.get('/me', authMiddleware, async (req, res) => {
         org_features,
         org_pipeline,
         org_pipelines,
+        org_has_customers,
         notification_preferences: u.notification_preferences || {},
         notification_email: u.notification_email || null,
         notification_phone: u.notification_phone || null,

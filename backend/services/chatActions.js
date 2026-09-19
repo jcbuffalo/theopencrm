@@ -77,6 +77,8 @@ const SPECS = {
       hot_flag: BOOL,
       expected_close_date: ISODATE,
       append_note: STR(4000), // appended to notes, not overwrite
+      next_step: STR(500),          // the rep's committed next action (migration 172)
+      next_step_date: ISODATE,      // the day it's due
     },
     required: [],
     needsTarget: true,            // target_id = deal id (ownership-checked)
@@ -87,8 +89,42 @@ const SPECS = {
       if (f.amount !== undefined) parts.push(`amount → $${f.amount.toLocaleString()}`);
       if (f.hot_flag !== undefined) parts.push(f.hot_flag ? 'flag hot' : 'unflag hot');
       if (f.expected_close_date !== undefined) parts.push(`close date → ${f.expected_close_date}`);
+      if (f.next_step !== undefined) parts.push(`next step → "${f.next_step}"`);
+      if (f.next_step_date !== undefined) parts.push(`next step due → ${f.next_step_date}`);
       if (f.append_note !== undefined) parts.push('add a note');
       return `Update deal #${a.target_id}: ${parts.join(', ')}`;
+    },
+  },
+  // Deal creation from chat ("create a $20k deal for Acme, stage
+  // negotiation"). A SERVICE action, not a generic table write: `company` /
+  // `contact_name` / `contact_email` are find-or-create by NAME (mirroring
+  // the lead-convert upsert in services/leads.js convertLead), and `stage` /
+  // `deal_type` must validate against the org's EFFECTIVE pipeline
+  // (services/pipelines.js) — none of which the pure allowlist validator
+  // below can do (no DB access here). routes/aiRoutes.js resolves + revalidates
+  // both at propose AND apply time; this spec only bounds shape/type.
+  'deal.create': {
+    service: 'deal_create',
+    fields: {
+      title:         STR(255),
+      company:       STR(200),   // company name — find-or-create, case-insensitive
+      contact_name:  STR(200),   // contact name — find-or-create alongside contact_email
+      contact_email: STR(254),
+      amount:        NUM,
+      close_date:    ISODATE,
+      stage:         STR(64),    // resolved id or label; re-validated against the pipeline at apply
+      deal_type:     (v) => typeof v === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(v),
+      notes:         STR(4000),
+    },
+    required: ['title'],
+    summary: (a) => {
+      const f = a.fields;
+      const bits = [];
+      if (f.company) bits.push(`for ${f.company}`);
+      if (f.amount !== undefined) bits.push(`$${f.amount.toLocaleString()}`);
+      if (f.stage) bits.push(`stage "${f.stage}"`);
+      if (f.deal_type && f.deal_type !== 'default') bits.push(`type "${f.deal_type}"`);
+      return `Create deal "${f.title}"${bits.length ? ' (' + bits.join(', ') + ')' : ''}`;
     },
   },
   'task.create': {

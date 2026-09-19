@@ -349,9 +349,17 @@ describe('sequences.processDueEnrollments', () => {
     const mail = sendSpy.mock.calls[0][0];
     expect(mail.to).toBe('ada@example.com');
     expect(mail.subject).toBe('Hi Ada Lovelace');
-    expect(mail.text).toBe('Hello Ada Lovelace, welcome!');
+    // The unsubscribe link is REQUIRED on drip mail: HTML footer, plain-text
+    // footer (text-only clients) and the List-Unsubscribe header (one-click
+    // in Gmail/Outlook) all point at the same public token URL.
+    expect(mail.text).toMatch(/^Hello Ada Lovelace, welcome!\n\n--\nUnsubscribe from these messages: .*\/api\/emails\/unsubscribe\/[a-f0-9]{48}$/);
     expect(mail.html).toMatch(/\/api\/emails\/unsubscribe\//);
     expect(mail.html).toMatch(/\/api\/emails\/track\/555\.gif/);
+    expect(mail.listUnsubscribe).toMatch(/\/api\/emails\/unsubscribe\/[a-f0-9]{48}$/);
+    // No org sender identity on the row → platform default ("<Org> via …"),
+    // no Reply-To.
+    expect(mail.fromNameVerbatim).toBe(false);
+    expect(mail.replyTo).toBeUndefined();
   });
 
   test('the last step completes the enrollment (status → completed, next_send_at NULL)', async () => {

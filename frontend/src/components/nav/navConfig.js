@@ -30,10 +30,17 @@ export function flagOn(orgFeatures, name) {
 // { key, label, to, aliases?, keywords? } — `keywords` only feed the palette.
 const item = (key, label, to, extra = {}) => ({ key, label, to, ...extra });
 
-export function buildNavModel({ cfg, orgFeatures, isAdmin }) {
+// `hasCustomers` (from /auth/me `org_has_customers`): false hides the
+// post-sale Customers group and the lifecycle/retention reports until the org
+// has its first customer-stage company or won deal — a day-one generic org
+// otherwise shows five empty post-sale modules. null/undefined = unknown =
+// show everything (older backend, personal workspace). Accounts stays under
+// People because that is where the first account gets made.
+export function buildNavModel({ cfg, orgFeatures, isAdmin, hasCustomers = null }) {
   const on = (name) => flagOn(orgFeatures, name);
   const advanced = !!cfg?.showAdvancedPanels;
   const cs = !!cfg?.showAccountManagement && on('customer_success_enabled');
+  const postSale = cs && hasCustomers !== false;
   const reports = on('reports_enabled');
 
   const pipeline = [
@@ -55,7 +62,7 @@ export function buildNavModel({ cfg, orgFeatures, isAdmin }) {
     item('import', 'Import CSV', '/import', { keywords: 'upload spreadsheet migrate' }),
   ].filter(Boolean);
 
-  const customers = cs ? [
+  const customers = postSale ? [
     item('renewals', 'Renewals & Contracts', '/renewals', { aliases: advanced ? [] : ['service-contracts'], keywords: 'service contracts expiring' }),
     item('cases', 'Cases', '/cases', { keywords: 'support tickets issues' }),
     item('playbooks', 'Playbooks', '/playbooks', { keywords: 'success onboarding steps' }),
@@ -66,8 +73,8 @@ export function buildNavModel({ cfg, orgFeatures, isAdmin }) {
   const reportsGroup = [
     item('dashboard', 'Dashboard', '/dashboard', { keywords: 'home widgets metrics' }),
     reports && item('reports', 'Reports', '/reports', { keywords: 'report builder commission analytics' }),
-    cs && item('lifecycle-funnel', 'Lifecycle', '/lifecycle-funnel', { keywords: 'funnel stages' }),
-    cs && item('retention', 'Retention & Win-back', '/retention', { aliases: ['winback'], keywords: 'churn winback' }),
+    postSale && item('lifecycle-funnel', 'Lifecycle', '/lifecycle-funnel', { keywords: 'funnel stages' }),
+    postSale && item('retention', 'Retention & Win-back', '/retention', { aliases: ['winback'], keywords: 'churn winback' }),
   ].filter(Boolean);
 
   const ops = advanced ? [
@@ -178,6 +185,18 @@ export function buildDestinations({ cfg, orgFeatures, isAdmin, isSuperAdmin }) {
   }
   return out;
 }
+
+// Quick-add commands — surfaced at the top of the command palette (as a
+// "Create" section, always visible with an empty query) and behind the '+'
+// button in the top bar / the mobile sheet. Kept here, not in
+// CommandPalette.js, so Nav.js and MobileSheet.js can render them as plain
+// links without importing the palette.
+export const CREATE_COMMANDS = [
+  { key: 'new-contact', label: 'New contact', to: '/contacts?new=1', keywords: 'add create contact person' },
+  { key: 'new-deal',    label: 'New deal',    to: '/deals?new=1',    keywords: 'add create deal opportunity pipeline' },
+  { key: 'new-task',    label: 'New task',    to: '/tasks?new=1',    keywords: 'add create task todo followup' },
+  { key: 'log-call',    label: 'Log a call',  to: '/activities?new=call', keywords: 'add create call log activity phone' },
+];
 
 // Tiny scorer for the palette: every whitespace token of the query must
 // appear in the label or keywords; label-prefix matches rank first.

@@ -913,6 +913,8 @@ function OutlookTab({ user }) {
 // ---------------------------------------------------------------------------
 
 const WORKSPACE_CARDS = [
+  { to: '/setup',                 icon: 'sparkles',    title: 'Build from a description', blurb: 'Describe how you sell; get the pipeline, fields and follow-ups drafted for you to approve.' },
+  { to: '/templates',             icon: 'copy',        title: 'Workspace templates', blurb: 'Save how your workspace is set up, reuse it, or start from one the community shared.' },
   { to: '/admin/feature-flags',   icon: 'settings',    title: 'Modules',         blurb: 'Turn parts of the CRM on or off. Start light; switch things on as you need them.' },
   { to: '/settings/pipeline',     icon: 'trending-up', title: 'Pipeline stages', blurb: 'Name and order the stages your deals move through.' },
   { to: '/admin/branding',        icon: 'star',        title: 'Branding',        blurb: 'Your name, logo, colour and the labels your team sees.' },
@@ -925,6 +927,97 @@ const WORKSPACE_CARDS = [
   { to: '/usage',                 icon: 'briefcase',   title: 'Usage & billing', blurb: 'See exactly what AI has cost this month and manage billing.' },
   { to: '/team',                  icon: 'users',       title: 'Team',            blurb: 'Invite people and set who is an owner, admin or member.' },
 ];
+
+// Outbound email identity — the From: display name and Reply-To every
+// customer-facing email (composer sends, sequence steps) goes out with.
+// GET/PUT /api/org/email-identity (services/senderIdentity.js). The sending
+// ADDRESS stays the platform's; only the name is yours — the preview shows
+// exactly what lands in the recipient's inbox. Do this before real outreach.
+function EmailIdentityCard() {
+  const { user } = useAuth();
+  const [state, setState] = useState(null);   // server payload
+  const [form, setForm] = useState({ sender_name: '', reply_to: '' });
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);       // { tone, text }
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/org/email-identity')
+      .then((r) => {
+        if (cancelled) return;
+        setState(r.data);
+        setForm({ sender_name: r.data?.sender_name || '', reply_to: r.data?.reply_to || '' });
+      })
+      .catch(() => { if (!cancelled) setState({ error: true }); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const save = async (e) => {
+    e.preventDefault();
+    setSaving(true); setMsg(null);
+    try {
+      const r = await api.put('/org/email-identity', {
+        sender_name: form.sender_name.trim() || null,
+        reply_to: form.reply_to.trim() || null,
+      });
+      setState(r.data);
+      setForm({ sender_name: r.data?.sender_name || '', reply_to: r.data?.reply_to || '' });
+      setMsg({ tone: 'success', text: 'Saved. New sends use this identity right away.' });
+    } catch (err) {
+      setMsg({ tone: 'danger', text: err.response?.data?.error || 'Could not save.' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (state?.error) return null; // personal workspace / older backend — nothing to configure
+  const dirty = state && (form.sender_name !== (state.sender_name || '') || form.reply_to !== (state.reply_to || ''));
+
+  return (
+    <Card
+      title={<span className="flex items-center gap-2"><Icon name="mail" size={16} className="text-gray-400" />Outbound email identity</span>}
+    >
+      {!state ? <Skeleton lines={3} /> : (
+        <form onSubmit={save} className="space-y-3">
+          <p className="text-sm text-gray-600">
+            How your emails show up in a prospect's inbox — one-off sends and sequence steps alike.
+            The sending address stays ours; the name and the Reply-To are yours, so replies come straight back to you.
+            Every message also carries an unsubscribe link.
+          </p>
+          {msg && <Alert tone={msg.tone} onDismiss={() => setMsg(null)}>{msg.text}</Alert>}
+          {state.email_configured === false && (
+            <Alert tone="warning">Email isn't activated on this deployment yet, so nothing actually sends — but the identity is saved for when it is.</Alert>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label="Sender name"
+              value={form.sender_name}
+              maxLength={120}
+              placeholder={user?.name || 'e.g. John Coles'}
+              hint="Shown as the From name. Leave blank to use your workspace name."
+              onChange={(e) => setForm((f) => ({ ...f, sender_name: e.target.value }))}
+            />
+            <Input
+              label="Reply-to address"
+              type="email"
+              value={form.reply_to}
+              placeholder={user?.email || 'you@yourcompany.com'}
+              hint="Where replies land. Leave blank to use each sender's own login email."
+              onChange={(e) => setForm((f) => ({ ...f, reply_to: e.target.value }))}
+            />
+          </div>
+          <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700">
+            <div><span className="font-semibold text-gray-500">From:</span> <code className="break-all">{state.effective?.from}</code></div>
+            <div className="mt-0.5"><span className="font-semibold text-gray-500">Reply-To:</span> <code className="break-all">{state.effective?.reply_to || '(each sender\'s login email)'}</code></div>
+          </div>
+          <div className="flex justify-end">
+            <Button type="submit" loading={saving} loadingLabel="Saving…" disabled={!dirty}>Save identity</Button>
+          </div>
+        </form>
+      )}
+    </Card>
+  );
+}
 
 function WorkspaceTab() {
   const { orgName, orgRole, isAdmin } = useAuth();
@@ -981,6 +1074,7 @@ function WorkspaceTab() {
           <Link to="/admin/feature-flags" className="underline">Modules</Link>.
         </p>
       )}
+      <EmailIdentityCard />
     </div>
   );
 }

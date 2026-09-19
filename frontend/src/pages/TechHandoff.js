@@ -117,8 +117,8 @@ const FEATURES_TODO = [
   ['Triggered automation', 'TODO — vendor-price-validation alerts at 30 days, hot-deal logic, customer surveys on shipment (~1-2 days)'],
   ['Salesman dashboards', 'TODO — per-user pipeline views + EOY commission reports'],
   ['Teams / Zoom / Call log integration', 'TODO — §4.1d.ii (multi-week, requires Microsoft Graph + Zoom API)'],
-  ['Email verification on signup', 'TODO — currently anyone can register; add token-based email verify before first login'],
-  ['Two-factor auth (TOTP)', 'TODO — speakeasy / otplib + QR generation'],
+  ['Email verification on signup', '✅ DONE — token-based verification email required before first login'],
+  ['Two-factor auth (TOTP)', '✅ DONE — speakeasy + QR enrollment, with recovery codes'],
   ['Customer appreciation queue', 'TODO — criteria-based gift trigger + manual queue'],
   ['Eaton / APC design-build forms', 'TODO — vendor-specific UI per §4.3a.iii'],
 ];
@@ -202,7 +202,7 @@ const SUPPORT_CHECKLIST = [
   'Note the request ID from the error response (returned as `requestId` in the JSON body and X-Request-Id header).',
   'Look up the request ID in Cloud Logging — every log line for that request shares it. This pinpoints the exact failure path.',
   'For data issues, query the audit_log table by actor_user_id and time range to see what the user attempted.',
-  'For deploy issues, check the most recent Cloud Build (`gcloud builds list --limit 5 --project xfte-platform`) and Cloud Run revision (`gcloud run revisions list --service synccrm-backend --region us-central1`).',
+  'For deploy issues, check the most recent Cloud Build history and the backend service\'s Cloud Run revision list (`gcloud run revisions list --region us-central1`).',
   'For migration issues, run: `SELECT name, executed_at FROM migrations ORDER BY id DESC LIMIT 20;` against the prod DB to confirm what ran.',
 ];
 
@@ -252,8 +252,8 @@ function generateMarkdown() {
 
   md += `\n---\n\n## Deployment\n\n`;
   md += `Both services deploy via Cloud Build → Cloud Run.\n\n`;
-  md += `### Backend\n\n\`\`\`bash\ncd backend\ngcloud builds submit --tag gcr.io/xfte-platform/synccrm-backend:latest . --project xfte-platform\ngcloud run deploy synccrm-backend \\\n  --image gcr.io/xfte-platform/synccrm-backend:latest \\\n  --region us-central1 --platform managed --project xfte-platform\n\`\`\`\n\n`;
-  md += `### Frontend\n\n\`\`\`bash\ncd frontend\ngcloud builds submit --tag gcr.io/xfte-platform/synccrm-frontend:latest . --project xfte-platform\ngcloud run deploy synccrm-frontend \\\n  --image gcr.io/xfte-platform/synccrm-frontend:latest \\\n  --region us-central1 --platform managed --project xfte-platform\n\`\`\`\n\n`;
+  md += `### Backend\n\n\`\`\`bash\ncd backend\ngcloud builds submit --tag gcr.io/<PROJECT_ID>/<BACKEND_SERVICE>:latest . --project <PROJECT_ID>\ngcloud run deploy <BACKEND_SERVICE> \\\n  --image gcr.io/<PROJECT_ID>/<BACKEND_SERVICE>:latest \\\n  --region us-central1 --platform managed --project <PROJECT_ID>\n\`\`\`\n\n`;
+  md += `### Frontend\n\n\`\`\`bash\ncd frontend\ngcloud builds submit --tag gcr.io/<PROJECT_ID>/<FRONTEND_SERVICE>:latest . --project <PROJECT_ID>\ngcloud run deploy <FRONTEND_SERVICE> \\\n  --image gcr.io/<PROJECT_ID>/<FRONTEND_SERVICE>:latest \\\n  --region us-central1 --platform managed --project <PROJECT_ID>\n\`\`\`\n\n`;
 
   md += `---\n\n## Migrations\n\n`;
   md += `SQL migrations live in \`backend/migrations/NNN_name.sql\`. They run automatically on backend startup in production (\`NODE_ENV=production\`). Each filename is recorded in the \`migrations\` table to prevent re-execution. To add a new schema change, drop a new file with a higher prefix.\n\n`;
@@ -408,17 +408,17 @@ export default function TechHandoff() {
               <p className="text-gray-700">Both services build via Cloud Build and deploy to Cloud Run. Migrations run automatically on backend startup when <code className={CODE}>NODE_ENV=production</code>.</p>
               <pre className="bg-gray-900 text-gray-100 p-3 rounded text-xs overflow-x-auto">{`# Backend
 cd backend
-gcloud builds submit --tag gcr.io/xfte-platform/synccrm-backend:latest .
-gcloud run deploy synccrm-backend \\
-  --image gcr.io/xfte-platform/synccrm-backend:latest \\
-  --region us-central1 --platform managed --project xfte-platform
+gcloud builds submit --tag gcr.io/<PROJECT_ID>/<BACKEND_SERVICE>:latest .
+gcloud run deploy <BACKEND_SERVICE> \\
+  --image gcr.io/<PROJECT_ID>/<BACKEND_SERVICE>:latest \\
+  --region us-central1 --platform managed --project <PROJECT_ID>
 
 # Frontend
 cd frontend
-gcloud builds submit --tag gcr.io/xfte-platform/synccrm-frontend:latest .
-gcloud run deploy synccrm-frontend \\
-  --image gcr.io/xfte-platform/synccrm-frontend:latest \\
-  --region us-central1 --platform managed --project xfte-platform`}</pre>
+gcloud builds submit --tag gcr.io/<PROJECT_ID>/<FRONTEND_SERVICE>:latest .
+gcloud run deploy <FRONTEND_SERVICE> \\
+  --image gcr.io/<PROJECT_ID>/<FRONTEND_SERVICE>:latest \\
+  --region us-central1 --platform managed --project <PROJECT_ID>`}</pre>
             </div>
           </Section>
 

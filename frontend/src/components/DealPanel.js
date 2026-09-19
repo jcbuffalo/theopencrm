@@ -19,8 +19,10 @@
 // Public API is unchanged: <DealPanel dealId companies onClose onChanged />.
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api, { downloadBlob } from '../api';
 import { useAuth } from '../AuthContext';
+import { takeComposeDraft } from '../composePrefill';
 import { getStageConfig } from '../stages';
 import EmailComposerModal from './EmailComposerModal';
 import { Alert, Button, Drawer, Skeleton, Tabs } from './ui';
@@ -33,8 +35,19 @@ import {
   flagOn, useDeal, useHiddenIntel, useOrgMembers, usePrimaryContact,
 } from './deal/useDealData';
 
+// Split an AI-drafted email into { subject, body }. Drafts frequently open
+// with a "Subject: …" line; when they do, it becomes the subject and is
+// dropped from the body. Otherwise `fallbackSubject` is used.
+export function splitDraft(text, fallbackSubject = '') {
+  const raw = String(text || '').replace(/\r\n/g, '\n');
+  const m = raw.match(/^\s*subject:\s*(.+)\n+/i);
+  if (m) return { subject: m[1].trim(), body: raw.slice(m[0].length).trim() };
+  return { subject: fallbackSubject, body: raw.trim() };
+}
+
 export default function DealPanel({ dealId, companies, onClose, onChanged, initialAction = null }) {
   const { user, orgFeatures } = useAuth();
+  const navigate = useNavigate();
   const flag = useCallback((name) => flagOn(orgFeatures, name), [orgFeatures]);
 
   const { deal, setDeal, loadError, refreshDeal, patchDeal } = useDeal(dealId, onChanged);
@@ -51,6 +64,9 @@ export default function DealPanel({ dealId, companies, onClose, onChanged, initi
   // deals.amount from them, so the manual Amount input locks with a hint.
   const [lineItemCount, setLineItemCount] = useState(0);
   const [emailOpen, setEmailOpen] = useState(false);
+  // Composer prefill from an AI draft ({ subject, body } or null). Cleared
+  // when the composer closes so the next plain "Email" opens blank.
+  const [emailPrefill, setEmailPrefill] = useState(null);
   const [smsOpen, setSmsOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
@@ -66,9 +82,14 @@ export default function DealPanel({ dealId, companies, onClose, onChanged, initi
   const vendors = useMemo(() => (companies || []).filter((c) => c.type === 'vendor'), [companies]);
   const workflowVisible = isWorkflowVisible(cfg, flag);
 
-  // Chat-first deep link (?compose=1) → open the composer once the deal is in.
+  // Chat-first deep link (?compose=1) → open the composer once the deal is
+  // in. A chat `draft_email` chip stashes its drafted text out-of-band
+  // (composePrefill.js); take it here so the composer opens prefilled.
   useEffect(() => {
-    if (deal && initialAction === 'compose-email') setEmailOpen(true);
+    if (!deal || initialAction !== 'compose-email') return;
+    const draft = takeComposeDraft(deal.id);
+    if (draft) setEmailPrefill(splitDraft(draft, `Re: ${deal.title || 'our conversation'}`));
+    setEmailOpen(true);
   }, [deal, initialAction]);
 
   // Jump from an Overview summary card to the matching section: switch tab,
@@ -87,6 +108,23 @@ export default function DealPanel({ dealId, companies, onClose, onChanged, initi
     onChanged?.();
     onClose();
   };
+
+  // "Open in composer" from the AI-drafted follow-up (actionModals.js
+  // AiAssistPanel): the draft lands in the composer's Subject/Body fields
+  // via EmailComposerModal's initialSubject/initialBody props. A leading
+  // "Subject: …" line in the draft becomes the subject; otherwise the deal
+  // title does.
+  const openDraftInComposer = (text) => {
+    setAiRequest(null);
+    setEmailPrefill(splitDraft(text, `Re: ${deal?.title || 'our conversation'}`));
+    setEmailOpen(true);
+  };
+
+  const closeEmail = () => { setEmailOpen(false); setEmailPrefill(null); };
+
+  // Chat-from-record: hand the copilot this deal (pages/Chat.js pre-sends one
+  // grounded opening message when the conversation is empty).
+  const askCopilot = () => navigate(`/chat?seed=deal&deal_id=${dealId}`);
 
   const poPdf = () => {
     const filename = `po-${(deal.po_number || `deal-${deal.id}`).toString().replace(/[^a-zA-Z0-9._-]/g, '_')}.pdf`;
@@ -160,15 +198,19 @@ export default function DealPanel({ dealId, companies, onClose, onChanged, initi
           lineItemCount={lineItemCount}
           aiEnabled={flag('ai_features_enabled')}
           onStageChange={(stage) => patchDeal({ stage })}
+          onNextStepChange={(patch) => patchDeal(patch)}
           onLogActivity={() => setLogOpen(true)}
           onAddTask={() => setTaskOpen(true)}
+          onEmail={() => setEmailOpen(true)}
+          hasEmailTarget={!!primaryContact?.email}
           onAi={(kind) => setAiRequest((r) => ({ kind, n: (r?.n || 0) + 1 }))}
+          onAskCopilot={askCopilot}
           overflowItems={overflowItems}
         />
 
         {aiRequest && (
           <div className="mt-4">
-            <AiAssistPanel deal={deal} request={aiRequest} onDismiss={() => setAiRequest(null)} />
+            <AiAssistPanel deal={deal} request={aiRequest} onDismiss={() => setAiRequest(null)} onOpenComposer={openDraftInComposer} />
           </div>
         )}
 
@@ -247,13 +289,15 @@ export default function DealPanel({ dealId, companies, onClose, onChanged, initi
       />
       <EmailComposerModal
         open={emailOpen}
-        onClose={() => setEmailOpen(false)}
+        onClose={closeEmail}
         onSent={() => {
-          setEmailOpen(false);
+          closeEmail();
           setEmailsRefreshKey((k) => k + 1);
         }}
         contact={primaryContact}
         deal={{ id: deal.id, title: deal.title }}
+        initialSubject={emailPrefill?.subject}
+        initialBody={emailPrefill?.body}
         // Fall back to the deal POC email when there's no linked contact —
         // common for post-sale phases where ship-to POC isn't a CRM contact.
         defaultTo={primaryContact?.email ? undefined : (deal.poc_email || '')}

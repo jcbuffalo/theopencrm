@@ -42,6 +42,8 @@
 const crypto = require('crypto');
 const pool = require('../db');
 const email = require('./email');
+// Per-org From: display name + Reply-To for every step (Settings → Workspace).
+const senderIdentity = require('./senderIdentity');
 const logger = require('./logger');
 const notificationDispatcher = require('./notificationDispatcher');
 
@@ -449,10 +451,12 @@ async function processDueEnrollments({ maxPerRun = DEFAULT_MAX_SENDS_PER_TICK } 
   const due = await pool.query(
     `SELECT e.id, e.org_id, e.user_id, e.sequence_id, e.contact_id, e.current_step,
             c.first_name, c.last_name, c.email AS contact_email,
-            s.created_by AS sequence_created_by, s.name AS sequence_name
+            s.created_by AS sequence_created_by, s.name AS sequence_name,
+            o.name AS org_name, o.branding AS org_branding
        FROM sequence_enrollments e
        JOIN sequences s ON s.id = e.sequence_id
        LEFT JOIN contacts c ON c.id = e.contact_id
+       LEFT JOIN organizations o ON o.id = e.org_id
       WHERE e.status = 'active'
         AND e.next_send_at IS NOT NULL
         AND e.next_send_at <= NOW()
@@ -582,20 +586,37 @@ async function processOneEnrollment(row) {
   );
   const sendId = sendIns.rows[0].id;
 
+  // Unsubscribe footer is REQUIRED on every sequence step (drip mail is bulk
+  // mail): the HTML footer link, the same link in the plain-text part for
+  // text-only clients, and an RFC 2369 List-Unsubscribe header so Gmail /
+  // Outlook can render their own one-click control. All three point at the
+  // existing public GET /api/emails/unsubscribe/:token.
   const apiBase = publicApiBase();
+  const unsubUrl = `${apiBase}/api/emails/unsubscribe/${unsubToken}`;
   const htmlBody = `${plainToHtml(bodyText)}
 <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0 12px;">
 <p style="font-size:11px;color:#9ca3af;">
-  <a href="${apiBase}/api/emails/unsubscribe/${unsubToken}" style="color:#9ca3af;">Unsubscribe</a> from these messages.
+  <a href="${unsubUrl}" style="color:#9ca3af;">Unsubscribe</a> from these messages.
 </p>
 <img src="${apiBase}/api/emails/track/${sendId}.gif" width="1" height="1" alt="" style="display:none;">`;
+  const textBody = `${bodyText}\n\n--\nUnsubscribe from these messages: ${unsubUrl}`;
+
+  // Sender identity (services/senderIdentity.js): the org's From: display
+  // name + Reply-To, so replies land with the rep, not in the platform inbox.
+  // Resolved from the org columns the due scan already joined — no extra
+  // round-trip per step.
+  const identity = senderIdentity.resolveFromOrg({ name: row.org_name, branding: row.org_branding });
 
   try {
     const sent = await email.sendMail({
       to: toEmail,
       subject,
       html: htmlBody,
-      text: bodyText,
+      text: textBody,
+      fromName: identity.fromName,
+      fromNameVerbatim: identity.fromNameIsCustom,
+      replyTo: identity.replyTo || undefined,
+      listUnsubscribe: unsubUrl,
     });
     if (sent.messageId) {
       await pool.query(

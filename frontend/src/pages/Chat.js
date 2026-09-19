@@ -29,6 +29,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import api, { streamChat } from '../api';
 import { useAuth } from '../AuthContext';
+import { stashComposeDraft } from '../composePrefill';
 import Nav from '../components/Nav';
 import WelcomeCard, { isWelcomeDismissed } from '../components/WelcomeCard';
 import AiBillingCard from '../components/AiBillingCard';
@@ -56,6 +57,7 @@ const DEBUG_STARTER_PROMPTS = [
 // First-run starters for an org with no deals/contacts yet. Shown when the
 // WelcomeCard has been dismissed but the workspace is still empty.
 const FIRST_RUN_STARTERS = [
+  { key: 'build', label: 'Describe how I sell — build my CRM', to: '/setup', adminOnly: true },
   { key: 'import', label: 'Import my contacts from a CSV', to: '/import' },
   { key: 'deal', label: 'Add my first deal', prompt: 'I want to add my first deal. Ask me for the company, the contact, what it is worth, and when I expect it to close — then set it up.' },
   { key: 'demo', label: 'Load sample data so I can explore', action: 'seed_demo' },
@@ -138,6 +140,9 @@ function actionHandler(action, { navigate, seed }) {
     } else if (action.kind === 'open_deal' && action.deal_id) {
       navigate(`/deals?dealId=${action.deal_id}`);
     } else if (action.kind === 'draft_email' && action.deal_id) {
+      // The drafted text rides along out-of-band (composePrefill.js) so the
+      // composer opens with Subject/Body already filled in.
+      if (action.draft) stashComposeDraft(action.deal_id, action.draft);
       navigate(`/deals?dealId=${action.deal_id}&compose=1`);
     }
   };
@@ -355,7 +360,9 @@ function StarterChips({ onPick, busy, debugMode }) {
 }
 
 function FirstRunStarters({ onSeed, onNavigate, onSeedDemo, canSeedDemo, busy }) {
-  const items = FIRST_RUN_STARTERS.filter((s) => s.action !== 'seed_demo' || canSeedDemo);
+  // canSeedDemo doubles as "is owner/admin" — the same role gate the builder's
+  // apply pieces enforce server-side.
+  const items = FIRST_RUN_STARTERS.filter((s) => (s.action !== 'seed_demo' && !s.adminOnly) || canSeedDemo);
   return (
     <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2" data-testid="first-run-starters">
       {items.map((s) => (
@@ -677,8 +684,10 @@ export default function Chat() {
   // backend, count failed) we fall back to the old two-list probe. Any
   // failure just leaves its slice unknown so the page still renders.
   const isEmpty = messages.length === 0;
+  // Runs regardless of isEmpty: a session restored from the last 24h (see
+  // below) still needs /my-day so the Today strip can render above the
+  // restored thread, not just in the pristine empty state.
   useEffect(() => {
-    if (!isEmpty) return undefined;
     let alive = true;
     setHome((h) => ({ ...h, loading: true }));
     (async () => {
@@ -937,11 +946,12 @@ export default function Chat() {
     }
   }, [activating, aiBilling]);
 
-  // Seed-prompt from a "Use this template" navigation. When PluginLibrary
-  // pushes us to /chat?seed=customize_plugin&plugin_id=<n>&template_name=<...>,
-  // auto-fire a first user message that asks the copilot to walk through what
-  // the cloned plugin does and what to change. We clear the query params right
-  // after seeding so a refresh doesn't re-fire the message.
+  // Seed-prompt from a record or template navigation. Three seeds:
+  //   ?seed=customize_plugin&plugin_id=<n>&template_name=…  (PluginLibrary)
+  //   ?seed=deal&deal_id=<n>          ("Ask the copilot" on the deal drawer)
+  //   ?seed=contact&contact_id=<n>    ("Ask the copilot" on the contact drawer)
+  // Each auto-fires ONE grounded first user message. We clear the query
+  // params right after seeding so a refresh doesn't re-fire the message.
   //
   // Guard rails:
   //   • Only seed when the conversation is empty AND the user hasn't typed.
@@ -957,12 +967,50 @@ export default function Chat() {
     if (input.trim()) return;
     const params = new URLSearchParams(location.search);
     const seed = params.get('seed');
-    if (seed !== 'customize_plugin') return;
-    const pluginId = params.get('plugin_id');
-    const templateName = params.get('template_name') || 'this template';
-    if (!pluginId) return;
+    let prompt = null;
+    if (seed === 'customize_plugin') {
+      const pluginId = params.get('plugin_id');
+      const templateName = params.get('template_name') || 'this template';
+      if (!pluginId) return;
+      prompt = `I just copied the "${templateName}" template into my workspace as a draft (plugin id ${pluginId}). It's turned off right now. Walk me through what it does in plain English, and ask me what I'd like to change.`;
+    } else if (seed === 'deal') {
+      // Chat-from-record ("Ask the copilot" on the deal drawer). One grounded
+      // opening turn: the model resolves the deal via get_deal itself.
+      const dealId = Number(params.get('deal_id'));
+      if (!Number.isInteger(dealId) || dealId <= 0) return;
+      prompt = `Give me the state of deal #${dealId} — where it stands, what's changed recently, and the single next step I should take. If it has no committed next step, suggest one.`;
+    } else if (seed === 'contact') {
+      // The copilot has no contact-read tool (deliberately — tool count is
+      // lint-pinned), so ground the opening turn client-side: pull the
+      // contact + their deal ids and hand them over in the message.
+      const contactId = Number(params.get('contact_id'));
+      if (!Number.isInteger(contactId) || contactId <= 0) return;
+      seededRef.current = true;
+      navigate('/chat', { replace: true });
+      (async () => {
+        let who = `contact #${contactId}`;
+        let dealsLine = '';
+        try {
+          const [c, d] = await Promise.allSettled([
+            api.get(`/contacts/${contactId}`),
+            api.get(`/contacts/${contactId}/deals`),
+          ]);
+          if (c.status === 'fulfilled' && c.value?.data) {
+            const x = c.value.data;
+            const name = `${x.first_name || ''} ${x.last_name || ''}`.trim();
+            const bits = [x.job_title, x.email, x.status ? `status ${x.status}` : null].filter(Boolean).join(', ');
+            who = `${name || 'this contact'} (contact #${contactId}${bits ? `; ${bits}` : ''})`;
+          }
+          if (d.status === 'fulfilled' && Array.isArray(d.value?.data) && d.value.data.length) {
+            dealsLine = ` Their deals: ${d.value.data.slice(0, 8).map((dl) => `#${dl.id} "${dl.title}" (${dl.stage})`).join(', ')} — use get_deal on those for detail.`;
+          }
+        } catch { /* fall back to the id-only prompt */ }
+        sendMessage(`Brief me on ${who}.${dealsLine} Tell me where the relationship stands, what's happened recently, and the single best next step to move it forward.`);
+      })();
+      return;
+    }
+    if (!prompt) return;
     seededRef.current = true;
-    const prompt = `I just copied the "${templateName}" template into my workspace as a draft (plugin id ${pluginId}). It's turned off right now. Walk me through what it does in plain English, and ask me what I'd like to change.`;
     sendMessage(prompt);
     navigate('/chat', { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1008,7 +1056,7 @@ export default function Chat() {
           onNavigate={navigate}
           onSeedDemo={seedDemo}
           canSeedDemo={canSeedDemo}
-          busy={busy || seedingDemo}
+          busy={composerDisabled || seedingDemo}
         />
       ) : (
         <div className="mt-4">
@@ -1025,16 +1073,16 @@ export default function Chat() {
     return (
       <>
         {!showDebug && <TodayStrip myDay={home.myDay} onPick={seedComposer} />}
-        <StarterChips onPick={sendMessage} busy={busy} debugMode={showDebug} />
+        <StarterChips onPick={sendMessage} busy={composerDisabled} debugMode={showDebug} />
       </>
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [home, showFirstRun, welcomeDismissed, canSeedDemo, busy, seedingDemo, showDebug, seedComposer, sendMessage]);
+  }, [home, showFirstRun, welcomeDismissed, canSeedDemo, busy, seedingDemo, showDebug, seedComposer, sendMessage, composerDisabled]);
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="h-screen bg-gray-50 flex flex-col">
       <Nav active="chat" />
-      <main className="flex-1 flex flex-col max-w-3xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6">
+      <main className="flex-1 min-h-0 flex flex-col max-w-3xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-hidden">
         {/* Top-of-page banner: AI not configured on this deployment. */}
         {aiUnavailable && (
           <div className="mb-3 bg-amber-50 border border-amber-300 text-amber-900 rounded-lg px-4 py-3 text-sm">
@@ -1079,19 +1127,34 @@ export default function Chat() {
             {emptyStateBody}
           </div>
         ) : (
-          <div className="flex items-center justify-end">
-            <button
-              type="button"
-              onClick={startNewChat}
-              className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-brand-blue px-2 py-1 rounded transition"
-            >
-              <Icon name="plus" size={12} /> New chat
-            </button>
+          <div className="mb-1">
+            {/* A restored thread (see the restore effect above) still deserves
+                the morning briefing — just collapsed by default so it doesn't
+                compete with the conversation for attention. */}
+            {!showDebug && home.myDay && (
+              <details className="mb-1.5 group">
+                <summary className="cursor-pointer select-none list-none inline-flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600">
+                  <Icon name="clock" size={11} /> Today's briefing
+                </summary>
+                <div className="mt-1.5">
+                  <TodayStrip myDay={home.myDay} onPick={seedComposer} />
+                </div>
+              </details>
+            )}
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                onClick={startNewChat}
+                className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-brand-blue px-2 py-1 rounded transition"
+              >
+                <Icon name="plus" size={12} /> New chat
+              </button>
+            </div>
           </div>
         )}
 
         {/* Scrollable message list. Grows to fill remaining viewport. */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto py-3 space-y-3">
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto py-3 space-y-3">
           {showDebug && (
             <div className="text-xs text-brand-blue bg-brand-blue/5 border border-brand-blue/20 rounded-lg px-3 py-2">
               <span className="font-semibold">Debug mode:</span> I can inspect audit logs, plugin runs, email sends, and saved views for you. Try “Why didn’t my last plugin run succeed?” or “Show me the last 5 failed audits.”
@@ -1125,7 +1188,7 @@ export default function Chat() {
         </div>
 
         {/* Sticky composer — the page's one focal point. */}
-        <div className="relative border-t border-gray-200 bg-white sticky bottom-0 pt-3 -mx-3 sm:-mx-6 px-3 sm:px-6 pb-3 sm:pb-4">
+        <div className="relative border-t border-gray-200 bg-white sticky bottom-0 pt-3 -mx-3 sm:-mx-6 px-3 sm:px-6 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-4">
           <OverflowMenu
             open={menuOpen}
             onClose={() => setMenuOpen(false)}
@@ -1163,7 +1226,7 @@ export default function Chat() {
                 : busy            ? 'Thinking…'
                                   : 'Ask anything about your pipeline…'
               }
-              className="flex-1 px-4 py-3 border border-gray-300 focus:border-brand-blue rounded-xl text-sm sm:text-base outline-none disabled:opacity-60 resize-none leading-relaxed max-h-[200px]"
+              className="flex-1 px-4 py-3 border border-gray-300 focus:border-brand-blue rounded-xl text-base outline-none disabled:opacity-60 resize-none leading-relaxed max-h-[200px]"
             />
             {busy ? (
               <button

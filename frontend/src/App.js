@@ -80,6 +80,12 @@ const Segments = lazyWithRetry(() => import('./pages/Segments'));
 const PitchZang = lazyWithRetry(() => import('./pages/PitchZang'));
 const PitchGeneric = lazyWithRetry(() => import('./pages/PitchGeneric'));
 const LaunchPost = lazyWithRetry(() => import('./pages/LaunchPost')); // public open-source launch announcement
+// Public marketing surfaces (spec 203, Phase 3): comparison pages, per-vertical
+// pages, and the verify-email landing target. Routes are enumerated from the
+// data files so a new comparison/vertical is one data entry + a PUBLIC_META row.
+const Compare = lazyWithRetry(() => import('./pages/Compare'));
+const Vertical = lazyWithRetry(() => import('./pages/Vertical'));
+const VerifyEmail = lazyWithRetry(() => import('./pages/VerifyEmail'));
 const PitchReadiness = lazyWithRetry(() => import('./pages/PitchReadiness'));
 const Appreciation = lazyWithRetry(() => import('./pages/Appreciation'));
 const AdminFeatureFlags = lazyWithRetry(() => import('./pages/AdminFeatureFlags'));
@@ -88,6 +94,8 @@ const AdminActivity = lazyWithRetry(() => import('./pages/AdminActivity'));
 const Settings = lazyWithRetry(() => import('./pages/Settings'));
 const DeveloperSettings = lazyWithRetry(() => import('./pages/DeveloperSettings'));
 const PipelineSettings = lazyWithRetry(() => import('./pages/PipelineSettings'));
+const Setup = lazyWithRetry(() => import('./pages/Setup'));
+const Templates = lazyWithRetry(() => import('./pages/Templates'));
 const LegalDoc = lazyWithRetry(() => import('./pages/LegalDoc'));
 const Usage = lazyWithRetry(() => import('./pages/Usage'));
 const Plugins = lazyWithRetry(() => import('./pages/Plugins'));
@@ -186,6 +194,21 @@ function App() {
           <Route path="/pending" element={<PendingApproval />} />
           <Route path="/pitch" element={<PitchGeneric />} />
           <Route path="/launch" element={<LaunchPost />} />
+          {/* Marketing surfaces (spec 203, Phase 3). Comparison slugs are
+              explicit for SEO; data lives in marketing/comparisons.js and the
+              slug prop must match an entry there. Vertical pages resolve
+              :slug against marketing/verticals.js (one per builder template).
+              Each route also needs a server.js PUBLIC_META row + sitemap entry. */}
+          <Route path="/hubspot-alternative" element={<Compare slug="hubspot" />} />
+          <Route path="/salesforce-alternative" element={<Compare slug="salesforce" />} />
+          <Route path="/pipedrive-alternative" element={<Compare slug="pipedrive" />} />
+          <Route path="/zoho-alternative" element={<Compare slug="zoho" />} />
+          <Route path="/spreadsheet-crm" element={<Compare slug="spreadsheet" />} />
+          <Route path="/custom-crm-alternative" element={<Compare slug="custom" />} />
+          <Route path="/crm-for/:slug" element={<Vertical />} />
+          {/* Landing target of the emailed verification link
+              (services/emailVerification.js) — must work with no session. */}
+          <Route path="/verify-email" element={<VerifyEmail />} />
           {/* Generic legal-doc renderer — serves any /legal/:doc against /api/legal/:doc */}
           <Route path="/legal/:doc" element={<LegalDoc />} />
           <Route path="/sso/handoff" element={<SsoHandoff />} />
@@ -214,6 +237,9 @@ function App() {
               <Route path="/pitch/zang" element={<PitchZang />} />
               <Route path="/companies" element={<Companies />} />
               <Route path="/contacts" element={<Contacts />} />
+              {/* Contact record deep link — Contacts reads :id and opens the
+                  ContactPanel drawer over the list (mirrors /deals?dealId=). */}
+              <Route path="/contacts/:id" element={<Contacts />} />
               <Route path="/duplicates" element={<Duplicates />} />
               <Route path="/deals" element={<Deals />} />
               <Route path="/leads" element={<Leads />} />
@@ -221,6 +247,9 @@ function App() {
               <Route path="/tasks" element={<Tasks />} />
               <Route path="/admin/*" element={<Admin />} />
               <Route path="/import" element={<ImportWizard />} />
+              {/* Workspace builder (spec 203) — "describe how you sell". */}
+              <Route path="/setup" element={<Setup />} />
+              <Route path="/templates" element={<Templates />} />
               <Route path="/team" element={<Team />} />
               <Route path="/quotes" element={<Quotes />} />
               <Route path="/products" element={<Products />} />

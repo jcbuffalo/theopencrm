@@ -28,6 +28,7 @@ const api = vi.hoisted(() => ({
 vi.mock('../api', () => ({
   default: api,
   api,
+  POST_LOGIN_REDIRECT_KEY: 'ocrm_post_login_redirect',
   downloadBlob: vi.fn(),
   LIFECYCLE_STAGES: ['prospect', 'onboarding', 'active', 'at_risk', 'renewed', 'churned'],
   playbooks: {
@@ -57,8 +58,22 @@ import Plugins from './Plugins';
 import Surveys from './Surveys';
 import Playbooks from './Playbooks';
 import PitchReadiness from './PitchReadiness';
+import Compare from './Compare';
+import Vertical from './Vertical';
+import CrmCostCalculator from '../components/CrmCostCalculator';
+import { COMPARISONS } from '../marketing/comparisons';
+import { VERTICALS } from '../marketing/verticals';
+
+// Public marketing pages (spec 203, Phase 3) — same invariants, no auth, no
+// API. Each comparison slug and each vertical slug renders through the same
+// data-driven component, so one entry per data row catches a bad row.
+const MARKETING_PAGES = [
+  ...COMPARISONS.map((c) => [`Compare/${c.slug}`, () => <Compare slug={c.slug} />]),
+  ...VERTICALS.map((v) => [`Vertical/${v.slug}`, () => <Vertical slug={v.slug} />]),
+];
 
 const PAGES = [
+  ...MARKETING_PAGES,
   ['Notifications', Notifications],
   ['Activities', Activities],
   ['Forecast', Forecast],
@@ -89,5 +104,35 @@ describe('design-system smoke', () => {
     // Let any data-loading effects settle before scanning the DOM.
     await waitFor(() => expect(api.get).toHaveBeenCalled(), { timeout: 200 }).catch(() => {});
     expect(document.body.textContent).not.toMatch(EMOJI);
+  });
+
+  // The calculator is a section, not a page (no h1 of its own), so it gets
+  // the emoji check plus the two things a visitor must be able to read.
+  it('CrmCostCalculator renders both totals and no emoji', () => {
+    render(
+      <MemoryRouter>
+        <CrmCostCalculator defaultCompetitor="hubspot" />
+      </MemoryRouter>
+    );
+    expect(screen.getByTestId('calc-current-total').textContent).toMatch(/^\$[\d,]+$/);
+    expect(screen.getByTestId('calc-open-total').textContent).toMatch(/^\$[\d,]+$/);
+    expect(screen.queryAllByRole('heading', { level: 1 })).toHaveLength(0);
+    expect(document.body.textContent).not.toMatch(EMOJI);
+  });
+
+  it('marketing primary CTA stores the /setup intent and goes to signup', async () => {
+    const { rememberSetupIntent, SETUP_INTENT_KEY } = await import('../marketing/cta');
+    sessionStorage.clear();
+    localStorage.clear();
+    rememberSetupIntent();
+    expect(sessionStorage.getItem('ocrm_post_login_redirect')).toBe('/setup');
+    expect(localStorage.getItem(SETUP_INTENT_KEY)).toBe('1');
+    render(
+      <MemoryRouter>
+        <Compare slug="hubspot" />
+      </MemoryRouter>
+    );
+    const ctas = screen.getAllByRole('button', { name: /build my crm/i });
+    expect(ctas.length).toBeGreaterThan(0);
   });
 });

@@ -29,6 +29,9 @@ const AUTH_ROUTES = [
   { path: '/',                       name: 'dashboard' },
   { path: '/companies',              name: 'companies' },
   { path: '/contacts',               name: 'contacts' },
+  // Contact record drawer (Wave 2). Id 1 may 404 on a fresh org — the drawer
+  // then renders its error state, which is still a valid phone layout to audit.
+  { path: '/contacts/1',             name: 'contact-record' },
   { path: '/deals',                  name: 'deals' },
   { path: '/activities',             name: 'activities' },
   { path: '/tasks',                  name: 'tasks' },
@@ -39,6 +42,11 @@ const AUTH_ROUTES = [
   { path: '/settings#notifications', name: 'settings-notifications' },
   { path: '/settings#legal',         name: 'settings-legal' },
   { path: '/usage',                  name: 'usage' },
+  { path: '/today',                  name: 'today' },
+  { path: '/calendar',               name: 'calendar' },
+  { path: '/leads',                  name: 'leads' },
+  { path: '/notifications',          name: 'notifications' },
+  { path: '/sequences',              name: 'sequences' },
 ];
 
 // Auth note: the single login is performed in global-setup.js against the
@@ -224,6 +232,39 @@ async function auditPage(page, viewport, route, projectName) {
   for (const o of offscreen) {
     logFinding('🟠', projectName, route.name, 'offscreen-interactive',
       `${o.tag} "${o.text}" at x=${o.x} w=${o.w}px`);
+  }
+
+  // 4b. Font-size < 16px on phone viewports. iOS Safari zooms the page on
+  // focus for any text input under 16px and never zooms back out — a known
+  // mobile-usability trap independent of the WCAG tap-target checks above.
+  // Tablet viewports (iPad) are excluded — the threshold is a phone-Safari
+  // quirk, not a general a11y rule.
+  const isPhoneViewport = !!viewport && viewport.width < 768;
+  if (isPhoneViewport) {
+    const tinyFonts = await page.evaluate(() => {
+      const els = document.querySelectorAll('input, select, textarea');
+      const tiny = [];
+      for (const el of els) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue; // not visible / collapsed
+        const cs = window.getComputedStyle(el);
+        if (cs.visibility === 'hidden' || cs.display === 'none') continue;
+        const fontSize = parseFloat(cs.fontSize);
+        if (Number.isFinite(fontSize) && fontSize < 16) {
+          tiny.push({
+            tag: el.tagName,
+            type: el.type || '',
+            fontSize,
+            hint: (el.placeholder || el.getAttribute('aria-label') || el.name || '').slice(0, 40),
+          });
+        }
+      }
+      return tiny.slice(0, 8);
+    });
+    for (const t of tinyFonts) {
+      logFinding('🔴', projectName, route.name, 'small-font-zoom-risk',
+        `${t.tag}${t.type ? `[${t.type}]` : ''} "${t.hint}" — ${t.fontSize}px (<16px triggers iOS auto-zoom-and-never-back)`);
+    }
   }
 
   // 5. WCAG 2.1 A + AA accessibility scan via @axe-core/playwright.

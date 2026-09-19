@@ -269,8 +269,10 @@ describe('POST /api/deals owner_user_id', () => {
 
     const insert = findCall(/INSERT INTO deals/);
     expect(insert[0]).toMatch(/owner_user_id/);
-    // owner is the last INSERT param ($27).
-    expect(insert[1][insert[1].length - 1]).toBe(OTHER_MEMBER_ID);
+    // owner is INSERT param $28 (followed by next_step / next_step_date,
+    // migration 172).
+    expect(insert[1][27]).toBe(OTHER_MEMBER_ID);
+    expect(insert[1]).toHaveLength(30);
   });
 
   test('rejects a foreign-org owner BEFORE the transaction opens', async () => {

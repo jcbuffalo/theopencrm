@@ -31,6 +31,11 @@ const { LIFECYCLE_STAGES } = require('../schemas/companies');
 // org's EFFECTIVE pipeline, and propose_update_pipeline edits it (confirm-first).
 const dealStages = require('../utils/dealStages');
 const pipelines = require('../services/pipelines');
+// Company / contact find-or-create by name, shared with POST /api/deals.
+const recordUpsert = require('../services/recordUpsert');
+// Tier record caps (deal.create re-runs the same inert-by-default gate
+// POST /api/deals does).
+const tierLimits = require('../services/tierLimits');
 // Chat plugin builder (propose_build_plugin): shared generation engine +
 // pure spec validator. The generator never writes; the validator gate runs at
 // propose AND apply (via chatActions' plugin.create_draft check).
@@ -1205,6 +1210,87 @@ router.post('/actions/apply', authMiddleware, async (req, res) => {
       return res.json({ ok: true, applied: out });
     }
 
+    // Deal creation (service action) — none of this fits the generic table
+    // writer (chatActions.applyAction): company/contact are find-or-create BY
+    // NAME (mirrors services/leads.js convertLead's company upsert), and
+    // deal_type/stage must be RE-VALIDATED against the org's CURRENT
+    // effective pipeline (the echoed proposal is untrusted — it could have
+    // been minted before a pipeline edit, or hand-crafted). Also re-runs the
+    // same tier cap POST /api/deals enforces.
+    if (action.entity === 'deal' && action.op === 'create') {
+      let dealType;
+      try {
+        dealType = pipelines.normalizeDealType(action.fields.deal_type);
+      } catch (err) {
+        return res.status(400).json(err.body || { error: 'Invalid deal_type' });
+      }
+      if (dealType !== pipelines.DEFAULT_DEAL_TYPE) {
+        const known = await pipelines.listPipelines(req.orgId);
+        if (!known.some((p) => p.deal_type === dealType)) {
+          return res.status(400).json({ error: `Unknown deal_type "${dealType}"`, code: 'INVALID_DEAL_TYPE', valid_deal_types: known.map((p) => p.deal_type) });
+        }
+      }
+      const dealPipeline = await pipelines.getEffectivePipeline(req.orgId, undefined, { dealType, skipCache: true });
+      const stage = action.fields.stage || dealPipeline.default_stage;
+      if (!dealStages.isValidStage(stage, dealPipeline)) {
+        return res.status(400).json({ error: 'Invalid stage', code: 'INVALID_STAGE', stage, valid_stages: dealPipeline.stages.map((st) => st.id) });
+      }
+      const dealPhase = dealStages.phaseForStage(stage, dealPipeline);
+
+      const tierGate = await tierLimits.recordLimitGate(req, 'deals');
+      if (tierGate) return res.status(tierGate.statusCode).json(tierGate.body);
+
+      const dealClient = await pool.connect();
+      try {
+        await dealClient.query('BEGIN');
+
+        // Company upsert (case-insensitive, org-scoped) + contact
+        // find-or-create (email first, else created from the name) — the
+        // shared services/recordUpsert.js path that POST /api/deals's
+        // one-motion form uses too, so the two can't drift.
+        const actor = { sf, sv, userId: req.userId, orgId: req.orgId };
+        const company = await recordUpsert.findOrCreateCompany(dealClient, actor, action.fields.company);
+        const companyId = company ? company.id : null;
+        const contact = await recordUpsert.findOrCreateContact(dealClient, actor, {
+          name: action.fields.contact_name, email: action.fields.contact_email, companyId,
+        });
+        const contactId = contact ? contact.id : null;
+
+        const inserted = await dealClient.query(
+          `INSERT INTO deals (user_id, org_id, contact_id, company_id, title, amount, stage, phase, deal_type,
+                              expected_close_date, notes, created_by, updated_by, last_activity_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,CURRENT_TIMESTAMP) RETURNING *`,
+          [
+            req.userId, req.orgId || null, contactId, companyId,
+            action.fields.title, action.fields.amount ?? null, stage, dealPhase, dealType,
+            action.fields.close_date || null, action.fields.notes || null,
+            req.userId,
+          ]
+        );
+        const dealRow = inserted.rows[0];
+        await dealClient.query('COMMIT');
+
+        if (req.orgId) {
+          pluginEvents.emit(req.orgId, 'deal.created', {
+            id: dealRow.id, title: dealRow.title, stage: dealRow.stage, deal_type: dealRow.deal_type, amount: dealRow.amount,
+          });
+        }
+        audit.fromReq(req, {
+          event: audit.EVENTS.AI_ACTION_APPLIED,
+          targetType: 'deal',
+          targetId: dealRow.id,
+          meta: { op: action.op, fields: Object.keys(action.fields) },
+        });
+        return res.json({ ok: true, result: dealRow, open_path: `/deals?dealId=${dealRow.id}`, open_label: 'Open deal' });
+      } catch (err) {
+        await dealClient.query('ROLLBACK').catch(() => {});
+        console.error('deal.create apply failed:', err);
+        return res.status(500).json({ error: 'Failed to create deal', detail: err.message });
+      } finally {
+        dealClient.release();
+      }
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -1356,6 +1442,8 @@ function buildChatToolRunner(req) {
         customer_name: ctx.deal.customer_name, vendor_name: ctx.deal.vendor_name,
         last_activity_at: ctx.deal.last_activity_at, hot_flag: ctx.deal.hot_flag,
         notes: ctx.deal.notes,
+        // Committed next step (migration 172) — null on pre-172 rows.
+        next_step: ctx.deal.next_step ?? null, next_step_date: ctx.deal.next_step_date ?? null,
       },
       vendor_quotes: ctx.vendorQuotes.map(v => ({
         vendor_name: v.vendor_name, amount: v.amount, is_selected: v.is_selected, status: v.status,
@@ -2401,6 +2489,57 @@ function buildChatToolRunner(req) {
     return buildProposal('deal', 'update', deal_id, fields);
   }
 
+  // Deal creation from chat. Resolves + validates deal_type and stage against
+  // the org's EFFECTIVE pipeline for that type UP FRONT (services/pipelines.js)
+  // so a bad stage/type is caught here rather than only surfacing at Apply.
+  // company/contact_name/contact_email are pass-through free text — they are
+  // find-or-create BY NAME at apply time (services/leads.js convertLead
+  // pattern), so there is nothing to ownership-check here (no ids accepted).
+  async function propose_create_deal(input) {
+    const i = input || {};
+    if (typeof i.title !== 'string' || !i.title.trim()) {
+      return { error: 'invalid', validation_errors: ['title is required'] };
+    }
+
+    let dealType;
+    try {
+      dealType = pipelines.normalizeDealType(i.deal_type);
+    } catch (err) {
+      return { error: 'invalid', validation_errors: (err.body && err.body.validation_errors) || ['Invalid deal_type'] };
+    }
+    if (dealType !== pipelines.DEFAULT_DEAL_TYPE) {
+      const known = await pipelines.listPipelines(req.orgId);
+      if (!known.some((p) => p.deal_type === dealType)) {
+        return { error: 'invalid', validation_errors: [`Unknown deal_type "${dealType}". Known: ${known.map((p) => p.deal_type).join(', ')}`] };
+      }
+    }
+
+    const pipeline = await pipelines.getEffectivePipeline(req.orgId, undefined, { dealType });
+    let stage = pipeline.default_stage;
+    if (i.stage !== undefined && i.stage !== null && String(i.stage).trim()) {
+      const resolved = dealStages.resolveStageId(i.stage, pipeline);
+      if (!resolved) {
+        return { error: 'invalid', validation_errors: [`"${i.stage}" is not a valid stage for this pipeline. Valid stages: ${pipeline.stages.map((st) => st.id).join(', ')}`] };
+      }
+      stage = resolved;
+    }
+
+    // Same inert-by-default tier cap POST /api/deals runs — fail fast at
+    // propose time too so the user isn't shown a card that Apply will reject.
+    const tierGate = await tierLimits.recordLimitGate(req, 'deals');
+    if (tierGate) return { error: 'tier_limit', detail: (tierGate.body && tierGate.body.error) || 'Deal limit reached for your plan.' };
+
+    const fields = { title: i.title.trim(), stage, deal_type: dealType };
+    if (i.company !== undefined) fields.company = i.company;
+    if (i.contact_name !== undefined) fields.contact_name = i.contact_name;
+    if (i.contact_email !== undefined) fields.contact_email = i.contact_email;
+    if (i.amount !== undefined) fields.amount = i.amount;
+    if (i.close_date !== undefined) fields.close_date = i.close_date;
+    if (i.notes !== undefined) fields.notes = i.notes;
+
+    return await buildProposal('deal', 'create', undefined, fields);
+  }
+
   async function propose_create_task(input) {
     return buildProposal('task', 'create', undefined, input || {});
   }
@@ -3071,6 +3210,7 @@ function buildChatToolRunner(req) {
       // a proposal; they NEVER write. how_do_i / list_modules are read-only
       // capability lookups.
       case 'propose_update_deal':     return await propose_update_deal(input);
+      case 'propose_create_deal':     return await propose_create_deal(input);
       case 'propose_create_task':     return await propose_create_task(input);
       case 'propose_log_activity':    return await propose_log_activity(input);
       case 'propose_upsert_contact':  return await propose_upsert_contact(input);
@@ -3156,7 +3296,11 @@ function buildActionsFromToolCalls(toolCalls) {
     } else if (tc.name === 'get_deal' && Number.isInteger(tc.input?.deal_id)) {
       push({ kind: 'open_deal', deal_id: tc.input.deal_id, label: `Open deal #${tc.input.deal_id}` });
     } else if (tc.name === 'draft_email_for_deal' && Number.isInteger(tc.input?.deal_id)) {
-      push({ kind: 'draft_email', deal_id: tc.input.deal_id, label: 'Open in email composer' });
+      // Carry the drafted text so the composer opens PREFILLED (Chat.js
+      // stashes it, DealPanel reads it via composePrefill.js) instead of
+      // blank. Capped so a runaway draft can't bloat the chip payload.
+      const draft = typeof tc.result?.draft === 'string' ? tc.result.draft.slice(0, 8000) : undefined;
+      push({ kind: 'draft_email', deal_id: tc.input.deal_id, label: 'Open in email composer', ...(draft ? { draft } : {}) });
     } else if (tc.name === 'run_plugin' && tc.result?.run) {
       const pluginId = tc.result.plugin_id || tc.input?.plugin_id;
       const runId    = tc.result.run.id;

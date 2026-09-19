@@ -18,7 +18,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../AuthContext';
 import BrandLogo from './BrandLogo';
 import { getStageConfig } from '../stages';
-import { buildNavModel, resolveActive } from './nav/navConfig';
+import { buildNavModel, resolveActive, CREATE_COMMANDS } from './nav/navConfig';
 import NavMenu, { Chevron } from './nav/NavMenu';
 import NotificationBell from './nav/NotificationBell';
 import MobileSheet from './nav/MobileSheet';
@@ -38,6 +38,27 @@ const BAR_ON   = 'text-brand-blue font-semibold';
 // it reads as a tab, not a pill — pills are reserved for Chat.
 function ActiveBar() {
   return <span aria-hidden="true" className="absolute left-3 right-3 -bottom-[10px] h-0.5 rounded-full bg-brand-blue" />;
+}
+
+// Quick-add — a plain dropdown of the same "New contact / New deal / New
+// task / Log a call" rows the command palette offers, one tap away from
+// every page without opening ⌘K. Not `hidden` at any breakpoint so it's
+// reachable on a phone from the top bar itself, not only via the hamburger.
+function QuickAddButton() {
+  return (
+    <NavMenu
+      id="quick-add"
+      label="Quick add"
+      align="right"
+      sections={[CREATE_COMMANDS]}
+      triggerClassName="inline-flex items-center justify-center w-9 h-9 rounded-md text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition"
+      renderTrigger={() => (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+      )}
+    />
+  );
 }
 
 function SearchButton({ compact = false }) {
@@ -111,14 +132,14 @@ function UserMenu({ model, user, orgName, activeItemKey, active, onSignOut }) {
 }
 
 export default function Nav({ active }) {
-  const { signOut, isAdmin, orgProfile, orgBranding, orgName, orgFeatures, user } = useAuth();
+  const { signOut, isAdmin, orgProfile, orgBranding, orgName, orgFeatures, orgHasCustomers, user } = useAuth();
   const cfg = getStageConfig(orgProfile);
 
   const model = useMemo(
-    () => buildNavModel({ cfg, orgFeatures, isAdmin }),
+    () => buildNavModel({ cfg, orgFeatures, isAdmin, hasCustomers: orgHasCustomers }),
     // cfg is rebuilt from orgProfile each render; key on the inputs instead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [orgProfile, orgFeatures, isAdmin],
+    [orgProfile, orgFeatures, isAdmin, orgHasCustomers],
   );
   const { groupKey: activeGroup, itemKey: activeItem } = useMemo(() => resolveActive(model, active), [model, active]);
 
@@ -207,6 +228,7 @@ export default function Nav({ active }) {
         <div className="ml-auto flex items-center gap-1">
           <div className="hidden lg:block"><SearchButton /></div>
           <div className="lg:hidden"><SearchButton compact /></div>
+          <QuickAddButton />
           <NotificationBell />
           <div className="hidden lg:block">
             <UserMenu

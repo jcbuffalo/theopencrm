@@ -23,7 +23,7 @@ import Icon from './Icon';
 //   danger     — destructive (Delete, Halt). Filled red.
 //
 // Sizes:
-//   sm  — dense toolbars / table-row actions. min-h 32px (above WCAG floor).
+//   sm  — dense toolbars / table-row actions. min-h 36px (comfortable phone tap target).
 //   md  — default page CTA. min-h 40px.
 //   lg  — primary CTA above the fold on the public surfaces. min-h 44px (Apple HIG).
 //
@@ -51,7 +51,7 @@ const VARIANT_CLASSES = {
 };
 
 const SIZE_CLASSES = {
-  sm: 'px-3 py-1.5 text-xs font-medium min-h-[32px] rounded-md',
+  sm: 'px-3 py-1.5 text-xs font-medium min-h-[36px] rounded-md',
   md: 'px-4 py-2 text-sm font-semibold min-h-[40px] rounded',
   lg: 'px-6 py-3 text-base font-semibold min-h-[44px] rounded',
 };

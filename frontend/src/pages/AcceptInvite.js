@@ -118,7 +118,8 @@ export default function AcceptInvite() {
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Create Password</label>
-            <input type="password" {...f('password')} className={inputCls} placeholder="8+ characters" required />
+            <input type="password" {...f('password')} className={inputCls} placeholder="10+ characters" required />
+            <p className="text-[11px] text-gray-500 mt-1">10+ characters, mixing at least 3 of: lowercase, uppercase, digit, symbol.</p>
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Confirm Password</label>

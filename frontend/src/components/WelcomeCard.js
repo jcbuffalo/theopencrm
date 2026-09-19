@@ -35,6 +35,8 @@ import { useAuth } from '../AuthContext';
 // Unknown profiles (including jcp) fall back to the generic list.
 const TASK_CATALOGUE = {
   generic: [
+    // Owner/admin only (filtered below): the spec-203 first-run moment.
+    { key: 'build_workspace', title: 'Describe how you sell — I’ll build your CRM', hint: 'Your pipeline, fields, and follow-ups from a few plain sentences.', to: '/setup', adminOnly: true },
     { key: 'import_contacts', title: 'Import your contacts', hint: 'Bring your book of business in from a CSV.', to: '/import' },
     { key: 'add_first_deal', title: 'Add your first deal', hint: 'Tell me about the opportunity you have right now.', prompt: 'I want to add my first deal. Ask me for the company, the contact, what it is worth, and when I expect it to close — then set it up.' },
     { key: 'load_sample_data', title: 'Load sample data to explore', hint: 'A small demo workspace you can clear in one click.', action: 'seed_demo' },
@@ -100,7 +102,8 @@ function CheckIcon() {
 }
 
 export default function WelcomeCard({ onPrompt, onSeedDemo, onDismiss, hasData }) {
-  const { user, orgProfile, orgBranding, orgName } = useAuth();
+  const { user, orgProfile, orgBranding, orgName, orgRole } = useAuth();
+  const isAdmin = ['owner', 'admin'].includes(orgRole || user?.org_role);
 
   // Resolve a stable storage key only when we actually have a user. Until
   // /auth/me resolves, user is null and we should render nothing — otherwise
@@ -126,7 +129,9 @@ export default function WelcomeCard({ onPrompt, onSeedDemo, onDismiss, hasData }
   if (state.dismissedAt) return null;
   if (hasData === true) return null;
 
-  const tasks = tasksForProfile(orgProfile).filter((t) => t.action !== 'seed_demo' || typeof onSeedDemo === 'function');
+  const tasks = tasksForProfile(orgProfile)
+    .filter((t) => t.action !== 'seed_demo' || typeof onSeedDemo === 'function')
+    .filter((t) => !t.adminOnly || isAdmin);
 
   // Greeting precedence: branding display name, else org name, else the
   // user's first name. Branding override is what makes the card feel

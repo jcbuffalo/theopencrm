@@ -182,6 +182,41 @@ describe('GET /auth/me', () => {
     expect(f.plugins_enabled).toBe(true);     // explicit on wins over default-off
     expect(f.reports_enabled).toBe(true);     // untouched → registered default
     expect(f.quickbooks_enabled).toBe(false); // untouched → registered default
+    // No has_customers row was queued → unknown → null (frontend shows everything).
+    expect(res.body.user.org_has_customers).toBeNull();
+  });
+
+  test('reports org_has_customers from one org-scoped EXISTS query (Wave 3 nav gating)', async () => {
+    const token = generateToken(97);
+    const calls = [];
+    mockPool.query.mockImplementation(async (sql, params) => {
+      const s = String(sql);
+      calls.push({ s, params });
+      if (/FROM users u/i.test(s)) {
+        return { rows: [{
+          id: 97, email: 'nav@b.com', name: 'Nav', status: 'active', org_id: 6000, org_role: 'owner',
+          notification_preferences: {}, notification_email: null, notification_phone: null,
+          org_profile: 'generic', org_name: 'Workspace', org_branding: {}, org_tier: 'free',
+          admin_role: null, admin_permissions: null,
+        }] };
+      }
+      if (/FROM users WHERE id/i.test(s)) return { rows: [{ org_id: 6000, org_role: 'owner', status: 'active' }] };
+      if (/AS has_customers/i.test(s)) return { rows: [{ has_customers: false }] };
+      return { rows: [] };
+    });
+
+    const res = await request(buildApp())
+      .get('/auth/me')
+      .set('Cookie', [`${AUTH_COOKIE_NAME}=${token}`]);
+    expect(res.status).toBe(200);
+    expect(res.body.user.org_has_customers).toBe(false);
+    const hc = calls.find((c) => /AS has_customers/i.test(c.s));
+    expect(hc.params).toEqual([6000]);
+    // Both signals are checked: a non-prospect company OR a won deal (legacy
+    // stage ids, closed_date, or a custom pipeline's is_won stage).
+    expect(hc.s).toMatch(/lifecycle_stage, 'prospect'\) <> 'prospect'/);
+    expect(hc.s).toMatch(/closed_date IS NOT NULL/);
+    expect(hc.s).toMatch(/is_won/);
   });
 });
 

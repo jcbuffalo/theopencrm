@@ -240,6 +240,10 @@ router.post('/:id/convert', async (req, res) => {
     res.json(result);
   } catch (error) {
     if (error.status === 409) return res.status(409).json({ error: error.message });
+    // Invalid dealStage (services/leads.js convertLead) carries a route-
+    // equivalent 400 body (INVALID_STAGE + valid_stages), same shape as
+    // POST /api/deals.
+    if (error.status === 400 && error.body) return res.status(400).json(error.body);
     if (req.log) req.log.error('lead_convert_failed', { error });
     res.status(500).json({ error: 'Failed to convert lead' });
   }

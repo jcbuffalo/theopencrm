@@ -71,6 +71,34 @@ describe('Nav — grouped top bar', () => {
     expect(screen.queryByText(/provided AS IS/i)).toBeNull();
   });
 
+  it('hides the empty Customers group (and lifecycle/retention reports) until the org has a customer or won deal', () => {
+    // Day one: /auth/me says org_has_customers=false.
+    currentAuth = { ...defaultAuth, orgFeatures: ALL_ON, orgHasCustomers: false };
+    renderNav('deals');
+    let bar = desktop();
+    expect(within(bar).queryByRole('button', { name: 'Customers menu' })).toBeNull();
+    // Accounts stays under People — that's where the first account is made.
+    openGroup('People');
+    expect(screen.getByRole('menuitem', { name: 'Accounts' })).toBeInTheDocument();
+    cleanup();
+
+    // First customer / won deal → the group is back.
+    currentAuth = { ...defaultAuth, orgFeatures: ALL_ON, orgHasCustomers: true };
+    renderNav('deals');
+    bar = desktop();
+    expect(within(bar).getByRole('button', { name: 'Customers menu' })).toBeInTheDocument();
+    cleanup();
+
+    // Unknown (older backend, null) keeps everything visible.
+    currentAuth = { ...defaultAuth, orgFeatures: ALL_ON, orgHasCustomers: null };
+    renderNav('deals');
+    expect(within(desktop()).getByRole('button', { name: 'Customers menu' })).toBeInTheDocument();
+
+    // The palette's destinations are NOT pruned — every page stays a keystroke away.
+    const dests = buildDestinations({ cfg: getStageConfig('generic'), orgFeatures: ALL_ON, isAdmin: false, isSuperAdmin: false });
+    expect(dests.some((d) => d.key === 'renewals')).toBe(true);
+  });
+
   it('hides items whose feature flag is off', () => {
     currentAuth = {
       ...defaultAuth,

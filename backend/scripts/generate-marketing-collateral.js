@@ -631,9 +631,9 @@ async function buildPlaybook() {
     ['Can we get our existing data in?',
       'Yes — CSV import for companies, contacts, and deals via the import wizard.'],
     ['Can it automate tasks for us?',
-      'Today: trigger-based automation rules (stale-deal alerts, expiring quotes, renewal reminders) and AI-generated plugin drafts you can save and install from a curated library. Live plugin execution is the next build — don’t promise it as running yet.'],
+      'Trigger-based automation rules (stale-deal alerts, expiring quotes, renewal reminders) plus a 57-entry extension library — AI-generated or curated — that actually runs (confirm-first by default, autonomous mode opt-in). It ships and works today.'],
     ['How do we get started / can we self-serve sign-up?',
-      'Early access runs through an access-request approval gate — prospects request access and we approve same-day. Say “request access; we approve same-day during early access,” not “sign in this afternoon.”'],
+      'Open, self-serve sign-up — no approval queue. Say “sign up and you’re in,” not “request access; we approve same-day.”'],
   ];
   for (const [q, a] of faq) {
     ensure(ctx, 40);

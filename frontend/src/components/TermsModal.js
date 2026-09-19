@@ -103,7 +103,7 @@ export default function TermsModal({ onAccept }) {
       className="bg-gray-900 text-gray-200 text-xs sm:text-sm"
     >
       <div className="max-w-7xl mx-auto px-4 py-1.5 flex items-center justify-between gap-3">
-        <span className="min-w-0 truncate">
+        <span className="min-w-0 line-clamp-2 sm:line-clamp-none sm:truncate">
           By using The Open CRM you agree to the{' '}
           <Link to="/terms" className="underline decoration-gray-500 hover:decoration-white text-white">Terms of Service</Link>
           {' '}and{' '}

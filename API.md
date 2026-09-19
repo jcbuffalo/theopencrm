@@ -212,7 +212,7 @@ upstream in `index.js:419`.
 | POST | `/auth/google-signin` | public | `{ idToken }`. 503 if `GOOGLE_CLIENT_ID` unset. Emits `AUTH_GOOGLE_SIGNIN`. CSRF-exempt. | `authRoutes.js:308` |
 | POST | `/auth/logout` | public | Clears `authToken` + `csrfToken` cookies. Idempotent. Emits `AUTH_LOGOUT`. | `authRoutes.js:453` |
 | POST | `/auth/2fa/verify` | tempToken | `{ tempToken, code }`. Verifies TOTP / recovery code. Sets `authToken`. Emits `LOGIN_2FA_SUCCESS` / `LOGIN_2FA_FAIL`. CSRF-exempt. | `authRoutes.js:476` |
-| GET | `/auth/me` | yes | Current user incl. `is_admin`, `admin_role`, `org_id`, `org_profile`, `org_role`. | `authRoutes.js:561` |
+| GET | `/auth/me` | yes | Current user incl. `is_admin`, `admin_role`, `org_id`, `org_profile`, `org_role`, `org_features`, `org_pipeline(s)`, and **`org_has_customers`** (2026-09-19: `true` once the org has a customer-type / non-prospect company or a won deal — legacy closed stage, `closed_date`, or a custom-pipeline `is_won` stage; `null` if unknown. The nav hides the empty Customers group while it is `false`). | `authRoutes.js:561` |
 | GET | `/auth/login-options` | public | Lists which login methods are wired (`google`, `email`, `test`). | `authRoutes.js:611` |
 | POST | `/auth/sso/mint` | yes | Mints a short-lived sub-session token for an embed scenario. | `ssoRoutes.js:56` |
 
@@ -289,6 +289,8 @@ curl https://.../api/companies?type=vendor -b cookies.txt
 | PUT | `/api/contacts/:id` | `schemas/contacts.js#updateSchema` | | `contactRoutes.js:123` |
 | DELETE | `/api/contacts/:id` | — | | `contactRoutes.js:148` |
 
+The contact record drawer (`/contacts/:id`, `components/ContactPanel.js`, 2026-09-19) composes existing endpoints only: `GET /contacts/:id`, `/contacts/:id/deals`, `/contacts/:id/activities`, `GET /meetings?contact_id=`, `GET /tasks?contact_id=`, `GET /emails/sends?contact_id=`, `GET /sequences` + `POST /sequences/:id/enroll`, `POST /contacts/:id/touch`, `GET /contacts/:id/one-pager.pdf`.
+
 ---
 
 ## Deals (`/api/deals`)
@@ -297,11 +299,13 @@ curl https://.../api/companies?type=vendor -b cookies.txt
 |---|---|---|---|---|
 | GET | `/api/deals` | — | Filters: `stage`, `phase`, `contact_id`, `company_id`, `customer_id`, `vendor_id`, `salesman_id`, `hot=true`, `search`. | `dealRoutes.js:51` |
 | GET | `/api/deals/:id` | — | | `dealRoutes.js:89` |
-| POST | `/api/deals` | `schemas/deals.js#createSchema` | | `dealRoutes.js:108` |
+| POST | `/api/deals` | `schemas/deals.js#createSchema` | **One-motion create (2026-09-19):** optional `company_name` / `contact_name` / `contact_email` are found-or-created by name inside the deal's transaction (`services/recordUpsert.js`, shared with the chat copilot's `deal.create` apply) when the matching `*_id` is absent; the company also fills `customer_id`. Explicit ids always win. | `dealRoutes.js:108` |
 | PATCH | `/api/deals/:id/stage` | `schemas/deals.js#stagePatchSchema` | Kanban drag-drop. | `dealRoutes.js:166` |
-| PUT | `/api/deals/:id` | `schemas/deals.js#updateSchema` | | `dealRoutes.js:248` |
+| PUT | `/api/deals/:id` | `schemas/deals.js#updateSchema` | COALESCE-style partial update. **Exception:** `next_step` / `next_step_date` (migration 172) use present-key semantics — send `null` to clear a finished step; omit to leave alone. | `dealRoutes.js:248` |
 | GET | `/api/deals/:id/po-pdf` | — | Streams branded PO PDF. | `dealRoutes.js:316` |
 | DELETE | `/api/deals/:id` | — | | `dealRoutes.js:357` |
+
+**Next-step commitment (migration 172 — 2026-09-19):** every deal carries `next_step` (TEXT ≤500, the rep's own next action) and `next_step_date` (DATE). Returned on every deal GET, accepted on POST/PUT, exported in `GET /api/deals/export.csv` (`Next Step`, `Next Step Date`), and readable/settable through the chat tools `get_deal` / `propose_update_deal`. `GET /api/my-day` surfaces open deals whose `next_step_date <= today` in its `nextSteps` section (most overdue first, `overdue_days` derived); the deal drawer hero edits it inline and My Day's "Done" clears it via `PUT { next_step: null, next_step_date: null }`.
 
 ---
 
@@ -586,6 +590,37 @@ Plans: `{ rate_pct, goal?, effective_from, user_id? (rep plan; NULL = org defaul
 | POST | `/api/ai/propose-customization` | `{ entity, request }` | Returns `{ proposal: { actions, rejectedReason }, validationErrors, rawText }`. NOTHING is written. | `aiRoutes.js:378` |
 | POST | `/api/ai/apply-customization` | `{ actions: [...], request? }` | Owner/admin only. `aiSearchLimiter`. Re-validates and writes inside a transaction. Emits `CUSTOMIZATION_APPLIED`. | `aiRoutes.js:421` |
 
+### Workspace builder — "describe how you sell" (`/api/onboarding`, spec 203 Phase 1 — 2026-09-19)
+
+Mounted beside `/api/ai` (same `aiLimiter`) so the template list stays reachable without an AI
+billing verdict; `/plan` applies `requireAiBilling()` + `requireFeature('ai_features_enabled')`
+per-route. **Nothing here writes.** The frontend (`components/WorkspaceBuilder.js`, at `/setup`
+and embedded in the Chat first-run surface) applies each returned proposal through the ONE
+existing writer, `POST /api/ai/actions/apply`, in the order returned (pipeline first, so
+automation stage ids exist when the rules land).
+
+| Method | Path | Body | Notes | Source |
+|---|---|---|---|---|
+| GET | `/api/onboarding/templates` | — | `{ templates: [{ id, name, tagline }] }` — 12 starting templates (`services/onboardingTemplates.js`). Descriptions stay server-side. Any member. | `onboardingRoutes.js` |
+| POST | `/api/onboarding/plan` | `{ description?, template_id? }` (one required; both = template text + `"Also: …"`) | ONE structured Claude call (`endpoint: 'onboarding-plan'`, metered as usual) → `{ ok, can_apply, template_id, plan: { narrative, pipeline_name, proposals: [{ kind: pipeline\|field\|automation\|view, label, summary, detail, why, proposal }], skipped: [{ kind, label, reason }], notes: [] } }`. Every `proposal` is a `chatActions.validateAction`-clean action (`pipeline.update` / `custom_field.create` / `automation_rule.create` / `saved_view.create`) — exactly what `/actions/apply` re-validates. Bad pieces are **skipped with a reason, never fatal**; automation/view stage labels resolve against the PROPOSED pipeline; a missing won/lost stage is added deterministically; existing deals in dropped stages get `moveDealsTo` = first new stage (noted). `can_apply` = caller is org owner/admin. 400 `INVALID_DESCRIPTION` (< 12 chars) / `UNKNOWN_TEMPLATE`, 402 (billing), 422 `MALFORMED_RESPONSE`, 429 `QUOTA_EXCEEDED`, 503 `AI_NOT_CONFIGURED`. Audit: `AI_ACTION_PROPOSED` (`targetType: 'workspace_plan'`). | `onboardingRoutes.js`, `services/onboardingPlanner.js` |
+
+### Saved workspace templates (`/api/workspace-templates`, spec 203 Phase 2, migration 171 — 2026-09-19)
+
+A template's `config` is the SAME raw shape the planner consumes (`{ pipeline, fields, automations, views }`), so **cloning is deterministic — no AI call** (`services/workspaceTemplates.js` → `onboardingPlanner.assemblePlan`), and works for an org with AI off. Structural only: `snapshotOrg` reads definitions (effective pipeline, `org_field_definitions`, enabled `automation_rules` in the planner vocabulary, shared deal `saved_views`), never records; `sanitizeConfig` whitelists keys. `org_id NULL` = platform-authored. Visibility = own org OR `is_public`. Not behind the AI billing gate.
+
+| Method | Path | Body | Notes | Source |
+|---|---|---|---|---|
+| GET | `/api/workspace-templates?scope=all\|mine\|public` | — | `{ templates: [summary] }` — summary = `{ id, org_id, slug, name, tagline, vertical, description, is_public, is_platform, use_count, stages: [labels], pipeline_name, field_labels, automation_count, view_count }`. No `config`. Any member. | `workspaceTemplateRoutes.js` |
+| GET | `/api/workspace-templates/:id` | — | Full template incl. `config` + `can_edit` (own org). 404 unless own or public. | |
+| POST | `/api/workspace-templates` | `{ name, tagline?, vertical?, description?, is_public?, source: 'snapshot' }` **or** `{ …, config }` | Owner/admin (`requireOrgAdmin`). Snapshot = current workspace structure. `config` validated structurally (`validateConfig`: stages need won+lost, fields pass the custom-field validator, automation stage refs must exist on the template pipeline). 400 `INVALID_TEMPLATE` + `validation_errors`. Slug auto-derived, unique per org. | |
+| PUT | `/api/workspace-templates/:id` | any of `name, tagline, vertical, description, is_public, config` | Owner/admin, **own org only** (SQL-scoped). 404 otherwise. | |
+| DELETE | `/api/workspace-templates/:id` | — | Owner/admin, own org only. | |
+| POST | `/api/workspace-templates/:id/plan` | — | Template → validated proposals for THE CALLER'S org (same `plan` shape as `/api/onboarding/plan`; dupes skipped, stage refs resolved). Any member; `can_apply` by role. Bumps `use_count`. Client applies via `POST /api/ai/actions/apply`. | |
+| POST | `/api/workspace-templates/generate-platform` | `{ only?: [static ids] }` | **Super-admin only.** Runs the planner's draft step once per static template (`onboardingTemplates.js`) and upserts public platform rows (`org_id NULL`, slug = static id). The one AI-calling route here; metered as usual. | |
+| GET | `/api/public/workspace-templates` | — | **Unauthenticated**, `publicFormLimiter`, `Cache-Control: max-age=300`. Public template summaries for the marketing site. Never `config`. | |
+
+Frontend: `/templates` (gallery + save/manage + super-admin generate), `/setup?template=wt:<id>` (saved-template mode in `WorkspaceBuilder`), saved-template chips on the builder, "Save as template" in `/settings/pipeline`, cards on Settings → Workspace.
+
 ### Chat-First copilot
 
 The conversational front door. Tool-grounded. 30 tools live (8 CRM-action + 11
@@ -629,6 +664,8 @@ text).
 | DELETE | `/api/org/invites/:id` | | — | `orgRoutes.js:93` |
 | DELETE | `/api/org/members/:id` | | `ORG_MEMBER_REMOVED` | `orgRoutes.js:109` |
 | PUT | `/api/org` | Rename / update org. | — | `orgRoutes.js:130` |
+| GET | `/api/org/email-identity` | Outbound sender identity (2026-09-19): `{ sender_name, reply_to, effective: { from, reply_to }, email_configured, transport }`. Any member. | — | `orgRoutes.js` |
+| PUT | `/api/org/email-identity` | `{ sender_name?, reply_to? }` — owner/admin (`requireOrgAdmin`). `null`/`''` clears a key. Stored on `organizations.branding.email` (`services/senderIdentity.js`); the From: display name is used **verbatim** when set (else `"<Org> via The Open CRM"`), Reply-To falls back to the sending user's login email on one-off sends. Applied by `POST /api/emails/send` and every sequence step; both also now carry a plain-text unsubscribe footer + `List-Unsubscribe` header pointing at the existing `GET /api/emails/unsubscribe/:token`. 400 on a malformed address. | `ORG_EMAIL_IDENTITY_UPDATED` | `orgRoutes.js` |
 | GET | `/api/invites/:token` (public) | Lookup invite. | — | `acceptInviteRoutes.js:7` |
 | POST | `/api/invites/:token/accept` (public) | `{ name, password }`. Emits `ORG_INVITE_ACCEPTED`. CSRF-exempt. | `ORG_INVITE_ACCEPTED` | `acceptInviteRoutes.js:30` |
 

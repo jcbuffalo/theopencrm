@@ -139,13 +139,13 @@ export default function BulkActionBar({
         ref={barRef}
         role="toolbar"
         aria-label={`Bulk actions: ${countLabel}`}
-        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 max-w-[95vw]"
+        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 w-[95vw] sm:w-auto"
       >
-        <div className="flex items-center gap-1 rounded bg-brand-blue px-3 py-2 text-sm text-white shadow-overlay">
-          <span className="mr-2 whitespace-nowrap font-semibold">{countLabel}</span>
-          <span className="text-white/50" aria-hidden="true">·</span>
+        <div className="flex items-center gap-1 rounded bg-brand-blue px-3 py-2 text-sm text-white shadow-overlay overflow-x-auto">
+          <span className="mr-2 whitespace-nowrap font-semibold flex-shrink-0">{countLabel}</span>
+          <span className="text-white/50 flex-shrink-0" aria-hidden="true">·</span>
 
-          <div className="relative">
+          <div className="relative flex-shrink-0">
             <button
               type="button"
               onClick={() => setPopover(popover === 'owner' ? null : 'owner')}
@@ -186,7 +186,7 @@ export default function BulkActionBar({
           </div>
 
           {statusOptions && (
-            <div className="relative">
+            <div className="relative flex-shrink-0">
               <button
                 type="button"
                 onClick={() => setPopover(popover === 'status' ? null : 'status')}
@@ -226,7 +226,7 @@ export default function BulkActionBar({
             </div>
           )}
 
-          <div className="relative">
+          <div className="relative flex-shrink-0">
             <button
               type="button"
               onClick={() => setPopover(popover === 'delete' ? null : 'delete')}
@@ -251,7 +251,7 @@ export default function BulkActionBar({
           <button
             type="button"
             onClick={onClear}
-            className="ml-2 rounded-md p-1 text-white/80 hover:bg-white/15 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+            className="ml-2 flex-shrink-0 rounded-md p-1 text-white/80 hover:bg-white/15 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
             title="Clear selection"
             aria-label="Clear selection"
           >

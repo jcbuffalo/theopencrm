@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#2076CD" />
     <!-- The title/description/canonical below are the DEFAULTS; server.js
          swaps them per public route (see PUBLIC_META there). Keep the exact
@@ -25,6 +25,12 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!-- iOS ignores SVG touch icons — PNG required (2026-09-17 basics audit) -->
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <!-- Installable web app (2026-09-18 mobile push): manifest + iOS standalone hints. -->
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Open CRM" />
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
@@ -36,6 +42,7 @@
       "description": "Open-source (AGPL-3.0) customer relationship management with a chat-first AI copilot: companies, contacts, multi-pipeline deals, quotes, automation, reporting, customer-success tooling, and a customer portal. Self-host free or use managed hosting.",
       "offers": [
         { "@type": "Offer", "name": "Self-hosted (open source)", "price": "0", "priceCurrency": "USD" },
+        { "@type": "Offer", "name": "Hosted Free", "price": "0", "priceCurrency": "USD", "description": "Per workspace, capped at 1 seat / 100 contacts / 10 deals / 100 companies" },
         { "@type": "Offer", "name": "Hosted Starter", "price": "15", "priceCurrency": "USD", "description": "Per seat per month" },
         { "@type": "Offer", "name": "Hosted Pro", "price": "39", "priceCurrency": "USD", "description": "Per seat per month" }
       ]
@@ -56,7 +63,7 @@
            users see the full app. KEEP THIS IN SYNC with the positioning in
            src/pages/Landing.js — this is the machine-readable mirror of it. -->
       <div style="font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#111827;max-width:860px;margin:0 auto;padding:48px 20px;line-height:1.6">
-        <p style="display:inline-block;background:#e8f1fb;color:#2076CD;border-radius:999px;padding:4px 14px;font-size:13px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;margin:0 0 18px">Open Source · Self-Host Free · Hosted from $15</p>
+        <p style="display:inline-block;background:#e8f1fb;color:#2076CD;border-radius:999px;padding:4px 14px;font-size:13px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;margin:0 0 18px">Open Source · Free to Start · Hosted Plans from $15</p>
         <h1 style="font-size:2.4rem;font-weight:800;margin:0 0 14px;line-height:1.15">A full, open-source CRM with an AI copilot as the front door.</h1>
         <p style="font-size:1.2rem;color:#374151;margin:0 0 28px">Run it yourself for $0, or let us host it from $15 a seat — a fraction of what HubSpot charges. AI on top, usage-based, or bring your own Anthropic key and pay no markup.</p>
         <p style="margin:0 0 34px">
@@ -69,7 +76,7 @@
           <li style="margin-bottom:8px"><strong>Escape the tier.</strong> No per-contact storage penalties and no $90–100 seats for features nobody opens. Free tier, then $15 (Starter) or $39 (Pro) per seat.</li>
           <li style="margin-bottom:8px"><strong>Own your data.</strong> The code is open source (AGPL-3.0) — self-host the whole platform, or use hosted with one-click full data export and GDPR tooling built in. No proprietary lock-in.</li>
           <li style="margin-bottom:8px"><strong>Build what you need.</strong> REST API with personal access tokens, outbound webhooks, custom fields, editable multi-pipeline stages, an automation engine, and sandboxed plugins you can generate from a chat prompt.</li>
-          <li style="margin-bottom:8px"><strong>An AI copilot that does the work.</strong> A chat-first front door with 52 tools — create and update records, build reports and automations, run diagnostics — every write confirm-first. AI is pay-as-you-go, or bring your own key.</li>
+          <li style="margin-bottom:8px"><strong>An AI copilot that does the work.</strong> A chat-first front door with 53 tools — create and update records, build reports and automations, run diagnostics — every write confirm-first. AI is pay-as-you-go, or bring your own key.</li>
         </ul>
 
         <h2 style="font-size:1.35rem;font-weight:700;margin:0 0 12px">What's in the core</h2>

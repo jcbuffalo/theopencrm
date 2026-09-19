@@ -43,7 +43,7 @@ describe('new-module capability topics', () => {
     winback:          ['/winback',              'customer_success_enabled'],
     notifications:    ['/notifications',        null],
     record_ownership: [null,                    null],
-    tier_limits:      ['/usage',                null],
+    tier_limits:      ['/settings#billing',     null], // the plan picker — caps are live, upgrade lifts them
     customer_portal:  ['/admin/feature-flags',  'portal_enabled'],
   };
 

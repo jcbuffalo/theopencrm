@@ -15,6 +15,13 @@ import { PhoneLink } from './shared';
 
 const ACTIVITY_TYPES = ['call', 'email', 'meeting', 'note', 'demo', 'other'];
 
+// "First Last" for a contact-only surface (the contact drawer reuses these
+// modals with no deal in scope).
+function recordName(contact) {
+  if (!contact) return '';
+  return `${contact.first_name || ''} ${contact.last_name || ''}`.trim();
+}
+
 function nowLocal() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
@@ -23,7 +30,8 @@ function nowLocal() {
 
 // -- Log activity. type='call' writes through POST /calls/log (direction /
 // duration / outcome / notes map onto activity columns); every other type
-// is a plain POST /activities row.
+// is a plain POST /activities row. `deal` is optional: the contact drawer
+// logs against the contact alone (deal_id null).
 export function LogActivityModal({ open, deal, contact, onClose, onLogged }) {
   const [form, setForm] = useState({
     type: 'call', title: '', description: '', activity_date: nowLocal(),
@@ -50,7 +58,7 @@ export function LogActivityModal({ open, deal, contact, onClose, onLogged }) {
     try {
       if (isCall) {
         await api.post('/calls/log', {
-          deal_id: deal.id,
+          deal_id: deal?.id || null,
           contact_id: contact?.id || null,
           direction: form.direction,
           duration_minutes: form.duration_minutes ? Number(form.duration_minutes) : null,
@@ -66,7 +74,7 @@ export function LogActivityModal({ open, deal, contact, onClose, onLogged }) {
           duration_minutes: form.duration_minutes ? Number(form.duration_minutes) : null,
           outcome: form.outcome && form.type !== 'note' ? form.outcome : null,
           contact_id: contact?.id || null,
-          deal_id: deal.id,
+          deal_id: deal?.id || null,
         });
       }
       onLogged?.();
@@ -85,7 +93,7 @@ export function LogActivityModal({ open, deal, contact, onClose, onLogged }) {
       open={open}
       onClose={onClose}
       title="Log activity"
-      description={`Recorded on the timeline for ${deal?.title || 'this deal'}.`}
+      description={`Recorded on the timeline for ${deal?.title || recordName(contact) || 'this record'}.`}
       footer={(
         <>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -98,7 +106,7 @@ export function LogActivityModal({ open, deal, contact, onClose, onLogged }) {
         <Select label="Type" value={form.type} onChange={(e) => set({ type: e.target.value })}
           options={ACTIVITY_TYPES.map((t) => ({ value: t, label: t.charAt(0).toUpperCase() + t.slice(1) }))} />
         {isCall ? (
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Select label="Direction" value={form.direction} onChange={(e) => set({ direction: e.target.value })}>
               <option value="outbound">Outbound</option>
               <option value="inbound">Inbound</option>
@@ -114,7 +122,7 @@ export function LogActivityModal({ open, deal, contact, onClose, onLogged }) {
         ) : (
           <>
             <Input label="Title" required value={form.title} onChange={(e) => set({ title: e.target.value })} />
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Input type="datetime-local" label="When" value={form.activity_date} onChange={(e) => set({ activity_date: e.target.value })} required />
               <Input type="number" min="0" label="Minutes" value={form.duration_minutes} onChange={(e) => set({ duration_minutes: e.target.value })} />
             </div>
@@ -153,7 +161,7 @@ export function AddTaskModal({ open, deal, contact, onClose, onCreated }) {
         due_date: form.due_date || null,
         priority: form.priority,
         status: 'open',
-        deal_id: deal.id,
+        deal_id: deal?.id || null,
         contact_id: contact?.id || null,
       });
       onCreated?.();
@@ -170,7 +178,7 @@ export function AddTaskModal({ open, deal, contact, onClose, onCreated }) {
       open={open}
       onClose={onClose}
       title="Add task"
-      description={`Linked to ${deal?.title || 'this deal'}.`}
+      description={`Linked to ${deal?.title || recordName(contact) || 'this record'}.`}
       footer={(
         <>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -181,7 +189,7 @@ export function AddTaskModal({ open, deal, contact, onClose, onCreated }) {
       <form id="add-task-form" onSubmit={submit} className="space-y-3">
         {error && <Alert tone="danger">{error}</Alert>}
         <Input label="Title" required autoFocus value={form.title} onChange={(e) => set({ title: e.target.value })} />
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input type="date" label="Due" value={form.due_date} onChange={(e) => set({ due_date: e.target.value })} />
           <Select label="Priority" value={form.priority} onChange={(e) => set({ priority: e.target.value })}
             options={[{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }]} />
@@ -274,7 +282,7 @@ export function SmsModal({ open, deal, contact, onClose, onSent }) {
 // -- AI assist output. `request` is { kind: 'summarize' | 'draft', n } from
 // the hero's AI menu; a new n re-runs. Drafts show a recipient/steer row
 // first. Renders nothing until asked.
-export function AiAssistPanel({ deal, request, onDismiss }) {
+export function AiAssistPanel({ deal, request, onDismiss, onOpenComposer }) {
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
   const [output, setOutput] = useState('');
@@ -347,12 +355,27 @@ export function AiAssistPanel({ deal, request, onDismiss }) {
       )}
       {busy && mode === 'summarize' && <p className="text-xs text-gray-500">Summarizing…</p>}
       {output && (
-        <div className="relative whitespace-pre-wrap rounded border border-gray-200 bg-white p-3 pr-16 text-sm text-gray-800">
-          {output}
-          <Button size="sm" variant="ghost" icon="copy" className="absolute right-1 top-1"
-            onClick={() => { navigator.clipboard?.writeText(output); setCopied(true); }}>
-            {copied ? 'Copied' : 'Copy'}
-          </Button>
+        <div className="space-y-1.5">
+          <div className="whitespace-pre-wrap rounded border border-gray-200 bg-white p-3 text-sm text-gray-800">
+            {output}
+          </div>
+          <div className="flex justify-end gap-2">
+            {mode === 'draft' && onOpenComposer && (
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="mail"
+                title="Opens the email composer with this draft filled in"
+                onClick={() => onOpenComposer(output)}
+              >
+                Open in composer
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" icon="copy"
+              onClick={() => { navigator.clipboard?.writeText(output); setCopied(true); }}>
+              {copied ? 'Copied' : 'Copy'}
+            </Button>
+          </div>
         </div>
       )}
     </div>

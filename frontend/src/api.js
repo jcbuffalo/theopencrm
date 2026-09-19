@@ -90,6 +90,24 @@ api.interceptors.request.use(async (config) => {
 // fetch failing mid-session) still redirect.
 const AUTH_PROBE_PATHS = [/\/auth\/me$/, /\/auth\/csrf$/, /\/ai\/status$/];
 
+// A mid-session 401 (cookie expired / revoked while the user was mid-task)
+// stashes where they were so Login.js's consumePendingRedirect() can send
+// them back after they sign in again, instead of dropping them on the
+// dashboard. Session-scoped (not localStorage) — a stale "come back here"
+// target shouldn't survive a browser restart. Exported so Login.js can read
+// the same key without duplicating the string.
+export const POST_LOGIN_REDIRECT_KEY = 'ocrm_post_login_redirect';
+function stashCurrentPath() {
+  try {
+    if (typeof window === 'undefined' || !window.location) return;
+    const path = window.location.pathname + window.location.search;
+    // The landing/dashboard root is never worth "coming back to".
+    if (path && path !== '/') sessionStorage.setItem(POST_LOGIN_REDIRECT_KEY, path);
+  } catch {
+    /* sessionStorage unavailable (private mode, etc.) — best-effort only */
+  }
+}
+
 // Handle responses — on a real (non-probe) 401, kick to login. No localStorage
 // cleanup needed (we no longer store the JWT there).
 api.interceptors.response.use(
@@ -106,6 +124,7 @@ api.interceptors.response.use(
         window.location &&
         !window.location.pathname.startsWith('/login')
       ) {
+        stashCurrentPath();
         window.location.href = '/login';
       }
     }
@@ -180,6 +199,7 @@ export async function streamChat(body, { onEvent, signal } = {}) {
       window.location &&
       !window.location.pathname.startsWith('/login')
     ) {
+      stashCurrentPath();
       window.location.href = '/login';
     }
     const err = new Error((data && (data.error || data.message)) || `Request failed with status code ${res.status}`);

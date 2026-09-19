@@ -24,7 +24,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../AuthContext';
 import { getStageConfig } from '../stages';
-import { buildDestinations, matchDestinations } from './nav/navConfig';
+import { buildDestinations, matchDestinations, CREATE_COMMANDS } from './nav/navConfig';
 import { COMMAND_PALETTE_EVENT } from './Nav';
 
 // Where the AI router may send the user. Keys are the `resource` values the
@@ -87,7 +87,7 @@ function recordRows(results) {
     const name = `${c.first_name || ''} ${c.last_name || ''}`.trim();
     rows.push({
       kind: 'record', section: 'Contacts', key: `ct-${c.id}`, label: name || c.email,
-      hint: c.email || c.job_title || '', to: `/contacts?search=${encodeURIComponent(name)}`,
+      hint: c.email || c.job_title || '', to: `/contacts/${c.id}`,
     });
   });
   (results.deals || []).slice(0, 4).forEach((d) => rows.push({
@@ -95,6 +95,21 @@ function recordRows(results) {
     hint: d.company_name || d.stage || '', to: `/deals?search=${encodeURIComponent(d.title)}`,
   }));
   return rows;
+}
+
+// Quick-add rows — always offered (empty query) and still matched against a
+// typed query so "new deal" or "log a call" surfaces them directly.
+function matchesCreateQuery(cmd, q) {
+  if (!q) return true;
+  const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const hay = `${cmd.label} ${cmd.keywords || ''}`.toLowerCase();
+  return tokens.every((t) => hay.includes(t));
+}
+
+function createRows(q) {
+  return CREATE_COMMANDS
+    .filter((c) => matchesCreateQuery(c, q))
+    .map((c) => ({ kind: 'nav', section: 'Create', key: `create-${c.key}`, label: c.label, hint: null, to: c.to }));
 }
 
 export default function CommandPalette() {
@@ -180,13 +195,14 @@ export default function CommandPalette() {
   // The flat, ordered row list the keyboard walks.
   const rows = useMemo(() => {
     const q = query.trim();
+    const create = createRows(q);
     if (!q) {
-      return destinations.slice(0, 8).map((d) => ({ kind: 'nav', section: 'Quick links', key: `nav-${d.key}`, label: d.label, hint: d.group, to: d.to }));
+      return [...create, ...destinations.slice(0, 8).map((d) => ({ kind: 'nav', section: 'Quick links', key: `nav-${d.key}`, label: d.label, hint: d.group, to: d.to }))];
     }
     const nav = matchDestinations(destinations, q, 5).map((d) => ({ kind: 'nav', section: 'Go to', key: `nav-${d.key}`, label: d.label, hint: d.group, to: d.to }));
     const recs = recordRows(records);
     const ai = { kind: 'ai', section: 'Ask AI', key: 'ai', label: `Find records matching "${q}"`, hint: 'Claude turns this into a filter' };
-    return looksLikeAiQuery(q) ? [ai, ...nav, ...recs] : [...nav, ...recs, ai];
+    return looksLikeAiQuery(q) ? [ai, ...create, ...nav, ...recs] : [...create, ...nav, ...recs, ai];
   }, [query, destinations, records]);
 
   useEffect(() => { setSelected(0); }, [query, records]);

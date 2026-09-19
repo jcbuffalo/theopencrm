@@ -208,13 +208,17 @@ export default function DataTable({
               <div key={keyOf(row, i)} className={`p-4 ${checked ? 'bg-info-50' : ''}`}>
                 <div className="flex items-start gap-3">
                   {selectable && (
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => onToggleRow(row.id)}
+                    <label
+                      className="-m-2 mt-0 flex-shrink-0 cursor-pointer p-2"
                       aria-label={`Select row ${row.id}`}
-                      className={`mt-1 ${checkboxCls} flex-shrink-0`}
-                    />
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => onToggleRow(row.id)}
+                        className={`block ${checkboxCls}`}
+                      />
+                    </label>
                   )}
                   <div className="flex-1 min-w-0">
                     <div className="text-base font-semibold text-gray-900 break-words">

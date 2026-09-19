@@ -6,9 +6,10 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { auth, api } from '../api';
+import { auth, api, POST_LOGIN_REDIRECT_KEY } from '../api';
 import { useAuth } from '../AuthContext';
 import { PENDING_KEY as SSO_PENDING_KEY } from './SsoHandoff';
+import { consumeSetupIntent } from '../marketing/cta';
 import Button from '../components/ui/Button';
 
 // Backend API base (mirrors src/api.js). The SSO login flow is a top-level
@@ -32,7 +33,12 @@ function ssoErrorMessage(code) {
 }
 
 // If the user was bounced here from /sso/handoff, take them back there after
-// sign-in so the handoff can complete. Otherwise go to the dashboard.
+// sign-in so the handoff can complete. Otherwise, if a mid-session 401 (see
+// api.js's stashCurrentPath) stashed where they were working, return there
+// instead of dropping them on the dashboard. Otherwise go to the dashboard.
+// The SSO handoff key wins when both are set — it's a short-lived,
+// one-shot flow that takes priority over a merely-convenient "come back
+// here".
 function consumePendingRedirect() {
   try {
     const pending = sessionStorage.getItem(SSO_PENDING_KEY);
@@ -43,6 +49,19 @@ function consumePendingRedirect() {
   } catch {
     /* sessionStorage unavailable */
   }
+  try {
+    const returnTo = sessionStorage.getItem(POST_LOGIN_REDIRECT_KEY);
+    if (returnTo) {
+      sessionStorage.removeItem(POST_LOGIN_REDIRECT_KEY);
+      return returnTo;
+    }
+  } catch {
+    /* sessionStorage unavailable */
+  }
+  // Marketing "Build my CRM" CTA (marketing/cta.js) — localStorage-carried so
+  // it survives the verify-email link opening in a new tab. Only ever /setup.
+  const setupIntent = consumeSetupIntent();
+  if (setupIntent) return setupIntent;
   return '/';
 }
 

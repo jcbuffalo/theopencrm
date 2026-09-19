@@ -10,6 +10,7 @@
 
 import React from 'react';
 import { Link } from 'react-router-dom';
+import { CREATE_COMMANDS } from './navConfig';
 
 const LINK = 'flex items-center min-h-[40px] px-3 rounded-md text-sm';
 const IDLE = 'text-gray-700 hover:bg-gray-50';
@@ -48,6 +49,18 @@ export default function MobileSheet({ model, activeGroup, activeItem, user, onSe
           </svg>
           Search or ask anything
         </button>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {CREATE_COMMANDS.map((c) => (
+            <Link
+              key={c.key}
+              to={c.to}
+              onClick={onClose}
+              className="inline-flex items-center min-h-[32px] px-2.5 rounded-md text-xs font-medium bg-gray-50 text-gray-700 hover:bg-gray-100 border border-gray-200"
+            >
+              {c.label}
+            </Link>
+          ))}
+        </div>
       </div>
 
       <nav aria-label="Main" className="px-2 pb-2">

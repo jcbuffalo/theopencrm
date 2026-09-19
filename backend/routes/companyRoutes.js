@@ -294,6 +294,29 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// POST /:id/touch — stamp last_touch_at = now ("I just reconnected with this
+// account"), mirroring contactRoutes.js's /:id/touch. Org-scoped; cross-org
+// ids 404. See migration 169 for why this is a separate override column
+// rather than requiring an Activity row.
+router.post('/:id/touch', requireFeature('customer_success_enabled'), async (req, res) => {
+  try {
+    const [sf, sv] = qs(req);
+    const result = await pool.query(
+      `UPDATE companies
+          SET last_touch_at = NOW(), updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND ${sf} = $2
+        RETURNING *`,
+      [req.params.id, sv]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
+    res.json(result.rows[0]);
+  } catch (error) {
+    if (req.log) req.log.error('company_touch_failed', { error });
+    else console.error('Company touch error:', error);
+    res.status(500).json({ error: 'Failed to mark account touched' });
+  }
+});
+
 router.post('/', validateBody(companySchemas.createSchema), async (req, res) => {
   try {
     const { name, type, industry, website, phone, location, employee_count, annual_revenue, notes, lifecycle_stage, custom_fields, owner_user_id } = req.body;

@@ -231,7 +231,7 @@ export default function CommissionSection() {
       ) : !error && report && (
         <>
           {/* Totals strip */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="bg-white rounded shadow-sm border border-gray-200 p-4">
               <p className="text-xs text-gray-500 uppercase font-medium">Closed-Won</p>
               <p className="text-2xl font-bold mt-1 text-success-600">{fmtMoney(totals.won_value)}</p>

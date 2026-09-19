@@ -4,7 +4,7 @@
 // later. See the LICENSE file at the repository root, or
 // https://www.gnu.org/licenses/agpl-3.0.html. Distributed WITHOUT ANY WARRANTY.
 
-// Seat + record caps per pricing tier — INERT BY DEFAULT.
+// Seat + record caps per pricing tier.
 //
 // Mirrors services/quotaEnforcer.js (the AI-request quota enforcer): a
 // tier→limits config map, a typed exceeded-error carrying { orgId, tier,
@@ -14,9 +14,11 @@
 // object, so the frontend handles both billing gates the same way.
 //
 // THE SAFETY CONTRACT (this runs against live production orgs):
-//   • organizations.limits_tier is NULL for every org until a super-admin
-//     explicitly sets it (migration 136 adds it with no default and no
-//     backfill). NULL → UNLIMITED. Enforcement is inert on deploy.
+//   • organizations.limits_tier is set to 'free' at self-serve org creation
+//     (routes/authRoutes.js, routes/accessRequestRoutes.js), kept in step with
+//     the purchased tier by the Stripe webhook (routes/billingRoutes.js), and
+//     backfilled onto legacy free orgs by migration 170. A NULL value (an org
+//     created by a super-admin path that never set one) → UNLIMITED.
 //   • Comped orgs (ai_billing_status = 'comped') → UNLIMITED.
 //   • Paid orgs (ai_billing_status = 'active')   → UNLIMITED.
 //   • Super-admin callers (admin_users.role = 'super_admin') → UNLIMITED.

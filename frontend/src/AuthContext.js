@@ -175,6 +175,10 @@ export const AuthProvider = ({ children }) => {
         // consumers (Nav, CommandPalette) treat null as "everything on" so
         // nothing disappears against an older API.
         orgFeatures: user?.org_features || null,
+        // Has the org any post-sale reality yet (a customer / non-prospect
+        // company or a won deal)? false → Nav hides the empty Customers group
+        // until the first one exists. null (older backend) → show everything.
+        orgHasCustomers: typeof user?.org_has_customers === 'boolean' ? user.org_has_customers : null,
         notificationPreferences: user?.notification_preferences || {},
         notificationEmail: user?.notification_email || null,
         notificationPhone: user?.notification_phone || null,

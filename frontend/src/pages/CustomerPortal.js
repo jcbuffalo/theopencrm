@@ -255,8 +255,11 @@ export default function CustomerPortal() {
         {/* Messages — the running thread with the account team (portal v4) */}
         <MessagesSection token={token} messages={messages} onSent={(m) => setMessages((prev) => [...prev, m])} />
 
-        <footer className="text-center text-xs text-gray-400 pb-6">
-          This is a view of {company.name ? `the ${company.name} account` : 'your account'}, shared with you by your account team.
+        <footer className="text-center text-xs text-gray-400 pb-6 space-y-2">
+          <p>This is a view of {company.name ? `the ${company.name} account` : 'your account'}, shared with you by your account team.</p>
+          <p className="text-[11px]">
+            Powered by <a href="https://app.theopencrm.com" target="_blank" rel="noreferrer" className="text-gray-500 hover:text-gray-700 underline">The Open CRM</a> →
+          </p>
         </footer>
       </main>
     </div>

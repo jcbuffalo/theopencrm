@@ -248,6 +248,7 @@ async function summarizeDeal({ deal, vendorQuotes = [], issues = [], lastActivit
     `Vendor: ${deal.vendor_name || 'none'}`,
     `Amount: ${deal.amount ? `$${Number(deal.amount).toLocaleString()}` : 'unset'}`,
     `Expected close: ${deal.expected_close_date || 'unset'}`,
+    deal.next_step ? `Committed next step: ${deal.next_step}${deal.next_step_date ? ` (due ${deal.next_step_date})` : ''}` : null,
     deal.notes ? `Notes: ${deal.notes}` : null,
     vendorQuotes.length > 0
       ? `Vendor quotes: ${vendorQuotes.map(v => `${v.vendor_name || '?'} ${v.amount ? `$${v.amount}` : '(no quote)'}${v.is_selected ? ' SELECTED' : ''}`).join(' · ')}`
@@ -856,7 +857,7 @@ const CHAT_TOOLS = [
   // ==========================================================================
   {
     name: 'propose_update_deal',
-    description: 'Propose a change to a deal (move its stage, set amount, flag/unflag hot, set the expected close date, or append a note). Does NOT write — returns a proposal the user confirms with an Apply button. Resolve the deal id first via get_deal/list_deals.',
+    description: 'Propose a change to a deal (move its stage, set amount, flag/unflag hot, set the expected close date, set the committed next step + its due date, or append a note). Does NOT write — returns a proposal the user confirms with an Apply button. Resolve the deal id first via get_deal/list_deals.',
     input_schema: {
       type: 'object',
       properties: {
@@ -865,9 +866,31 @@ const CHAT_TOOLS = [
         amount:              { type: 'number',  description: 'New deal amount in USD.' },
         hot_flag:            { type: 'boolean', description: 'true to flag hot, false to unflag.' },
         expected_close_date: { type: 'string',  description: 'Expected close date, YYYY-MM-DD.' },
+        next_step:           { type: 'string',  description: 'The rep\'s committed next action on this deal, one line (e.g. "Send revised quote to Dana").' },
+        next_step_date:      { type: 'string',  description: 'Day the next step is due, YYYY-MM-DD. My Day surfaces deals whose next step is today or overdue.' },
         append_note:         { type: 'string',  description: 'Text to append to the deal notes (does not overwrite existing notes).' },
       },
       required: ['deal_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'propose_create_deal',
+    description: 'Propose creating a new deal ("create a $20k deal for Acme, stage negotiation, closing next month"). Does NOT write — returns a proposal the user confirms with Apply. `company` is matched case-insensitively against the org\'s companies and created if it does not exist yet; `contact_name`/`contact_email` work the same way for the linked contact (matched by email first, then created). `stage` accepts a stage id or a human label and is validated against the org\'s pipeline for the deal\'s type — omit it to use that pipeline\'s default (first) stage. `deal_type` (optional) picks which of the org\'s pipelines to file this under; omit for the main pipeline.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title:         { type: 'string', description: 'Deal title (required).' },
+        company:       { type: 'string', description: 'Company name — matched case-insensitively against existing companies, or created if new.' },
+        contact_name:  { type: 'string', description: 'Contact name — matched by contact_email if given, else created.' },
+        contact_email: { type: 'string', description: 'Contact email — used to find an existing contact, or set on a newly-created one.' },
+        amount:        { type: 'number', description: 'Deal amount in USD.' },
+        close_date:    { type: 'string', description: 'Expected close date, YYYY-MM-DD.' },
+        stage:         { type: 'string', description: 'Stage id or label, validated against the org pipeline for deal_type. Defaults to that pipeline\'s first stage.' },
+        deal_type:     { type: 'string', description: 'Which of the org\'s pipelines to file this deal under (lowercase slug). Omit for the main pipeline.' },
+        notes:         { type: 'string', description: 'Deal notes.' },
+      },
+      required: ['title'],
       additionalProperties: false,
     },
   },

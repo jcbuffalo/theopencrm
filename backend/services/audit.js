@@ -209,6 +209,10 @@ const EVENTS = {
   // The key VALUE is never written — only its last 4 characters.
   ORG_AI_KEY_SET:     'org.ai_key.set',
   ORG_AI_KEY_CLEARED: 'org.ai_key.cleared',
+  // Outbound sender identity (From: display name + Reply-To) changed via
+  // PUT /api/org/email-identity (services/senderIdentity.js). Meta:
+  //   { fields: ['sender_name'|'reply_to', ...] } — values are not logged.
+  ORG_EMAIL_IDENTITY_UPDATED: 'org.email_identity.updated',
   // Org provisioning via backend/scripts/provision-org.js (CLI) or
   // POST /api/admin/provision-org (super-admin REST). Meta carries
   //   { action: 'rename'|'create', name, profile, branding, adminEmail,

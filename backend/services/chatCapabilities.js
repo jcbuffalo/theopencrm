@@ -293,7 +293,7 @@ const CAPABILITIES = [
     summary: 'Deals on a phase-tabbed Kanban pipeline (drag between stages), with amount, probability, expected close date, hot flag, owner, notes, linked company/contact, activities, and (per profile) quotes, POs, and shipments.',
     where: '/deals',
     gating: null,
-    how: 'Work the board at /deals — drag a card to move its stage, open a card for the full panel. Or ask me: "move the Acme deal to negotiation", "flag the Beta deal hot", "what is the state of deal 42" — I read first, then propose the change (propose_update_deal) and you Apply. The stages themselves are editable by an owner/admin (see "pipeline_stages").',
+    how: 'Work the board at /deals — drag a card to move its stage, open a card for the full panel. Or ask me: "move the Acme deal to negotiation", "flag the Beta deal hot", "what is the state of deal 42" — I read first, then propose the change (propose_update_deal) and you Apply. "Create a $20k deal for Acme, stage negotiation" proposes a brand-new deal (propose_create_deal) — the company/contact are matched by name or created, and the stage is validated against the pipeline before it ever shows you the card. The stages themselves are editable by an owner/admin (see "pipeline_stages").',
   },
 
   // --------------------------------------------------------------------------
@@ -443,11 +443,11 @@ const CAPABILITIES = [
   {
     topic: 'tier_limits',
     keywords: ['tier limit', 'plan limit', 'usage limit', 'record limit', 'seat limit', 'record cap'],
-    status: 'config',
-    summary: 'Per-org record/seat tier limits exist in the schema (organizations.limits_tier) but are inert until an operator sets a tier on the org.',
-    where: '/usage',
+    status: 'live',
+    summary: 'Per-org seat and record caps follow the plan: Free is 1 seat / 100 contacts / 10 active deals / 100 companies; Starter allows 10 seats and Pro 50, both with unlimited records. Hitting a cap returns a clear upgrade prompt rather than failing silently.',
+    where: '/settings#billing',
     gating: null,
-    how: 'Nothing is capped by default. A super-admin sets limits_tier per org to activate caps. AI usage quotas are separate and already enforced per tier — check /usage for current consumption.',
+    how: 'Upgrade from Settings → Plan & Billing (or the prompt that appears when a cap is hit). Comped and paying orgs are never capped. AI usage quotas are separate — check /usage for current consumption.',
   },
   {
     topic: 'customer_portal',

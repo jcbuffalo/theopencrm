@@ -5,6 +5,7 @@
 // https://www.gnu.org/licenses/agpl-3.0.html. Distributed WITHOUT ANY WARRANTY.
 
 import React, { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import Nav from '../components/Nav';
 import api from '../api';
 import { Alert, Button, Card, Container, EmptyState, Icon, Input, Modal, PageHeader, Select, Skeleton, StatusBadge, Textarea } from '../components/ui';
@@ -20,9 +21,9 @@ const TYPE_TONE = {
   other:   'neutral',
 };
 
-function ActivityForm({ activity, contacts, deals, onClose, onSave }) {
+function ActivityForm({ activity, initialType, contacts, deals, onClose, onSave }) {
   const [form, setForm] = useState(() => ({
-    type: activity?.type || 'note',
+    type: activity?.type || initialType || 'note',
     title: activity?.title || '',
     description: activity?.description || '',
     activity_date: activity?.activity_date
@@ -79,7 +80,7 @@ function ActivityForm({ activity, contacts, deals, onClose, onSave }) {
       <form id="activity-form" onSubmit={submit} className="space-y-4">
         {error && <Alert tone="danger" onDismiss={() => setError('')}>{error}</Alert>}
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Select label="Type" required value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} options={TYPES} className="capitalize" />
           <Input label="When" required type="datetime-local" value={form.activity_date} onChange={(e) => setForm({ ...form, activity_date: e.target.value })} />
         </div>
@@ -88,12 +89,12 @@ function ActivityForm({ activity, contacts, deals, onClose, onSave }) {
 
         <Textarea label="Description / notes" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={3} />
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input label="Duration (minutes)" type="number" value={form.duration_minutes} onChange={(e) => setForm({ ...form, duration_minutes: e.target.value })} placeholder="30" />
           <Input label="Outcome" type="text" value={form.outcome} onChange={(e) => setForm({ ...form, outcome: e.target.value })} placeholder="Followed up, Voicemail, etc." />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Select label="Linked contact" value={form.contact_id} onChange={(e) => setForm({ ...form, contact_id: e.target.value })}>
             <option value="">None</option>
             {contacts.map(c => <option key={c.id} value={c.id}>{c.first_name} {c.last_name}</option>)}
@@ -109,6 +110,7 @@ function ActivityForm({ activity, contacts, deals, onClose, onSave }) {
 }
 
 export default function Activities() {
+  const location = useLocation();
   const [activities, setActivities] = useState([]);
   const [contacts, setContacts] = useState([]);
   const [deals, setDeals] = useState([]);
@@ -117,6 +119,17 @@ export default function Activities() {
   const [filter, setFilter] = useState('all');
   const [editing, setEditing] = useState(null);
   const [creating, setCreating] = useState(false);
+  // Quick-add (CommandPalette "Log a call" / nav "+" button) → ?new=call
+  // opens Log activity preset to type=call; plain ?new=1 just opens it.
+  const [presetType, setPresetType] = useState(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const flag = params.get('new');
+    if (flag === 'call') { setPresetType('call'); setCreating(true); }
+    else if (flag === '1') { setPresetType(null); setCreating(true); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
 
   const load = async () => {
     setLoading(true);
@@ -236,10 +249,11 @@ export default function Activities() {
       {(creating || editing) && (
         <ActivityForm
           activity={editing}
+          initialType={presetType}
           contacts={contacts}
           deals={deals}
-          onClose={() => { setCreating(false); setEditing(null); }}
-          onSave={() => { setCreating(false); setEditing(null); load(); }}
+          onClose={() => { setCreating(false); setEditing(null); setPresetType(null); }}
+          onSave={() => { setCreating(false); setEditing(null); setPresetType(null); load(); }}
         />
       )}
     </div>

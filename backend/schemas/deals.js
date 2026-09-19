@@ -89,6 +89,16 @@ const createSchema = z.object({
   // handler via services/recordOwnership.js; zod only shapes the value.
   owner_user_id: optInt,
   custom_fields: customFields,
+  // Next-step commitment (migration 172): one line + the day it's due.
+  next_step: optStr(500),
+  next_step_date: optDate,
+  // One-motion create (Wave 3, 2026-09-19): free-text company / contact that
+  // the handler finds-or-creates by name (services/recordUpsert.js) when the
+  // matching *_id is absent. Same shape the chat copilot's propose_create_deal
+  // accepts.
+  company_name: optStr(200),
+  contact_name: optStr(200),
+  contact_email: optStr(254),
 }).passthrough();
 
 const updateSchema = z.object({
@@ -124,6 +134,11 @@ const updateSchema = z.object({
   // Record owner (migration 135) — see createSchema note.
   owner_user_id: optInt,
   custom_fields: customFields,
+  // Next-step commitment (migration 172). Unlike the COALESCE'd columns,
+  // the handler writes these whenever the KEY is present — an explicit
+  // null / '' clears a finished step.
+  next_step: optStr(500),
+  next_step_date: optDate,
 }).passthrough();
 
 // PATCH /:id/stage — handler still re-checks against VALID_STAGES.

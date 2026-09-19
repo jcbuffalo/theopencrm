@@ -260,7 +260,7 @@ export default function DealLineItemsPanel({ dealId, onRollup, onCountChange }) 
         )}
         <Input size="sm" placeholder="Description" aria-label="Description" value={form.description}
           onChange={(e) => setForm({ ...form, description: e.target.value })} />
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <Input size="sm" type="number" min="0" step="any" placeholder="Qty" value={form.quantity} aria-label="Quantity"
             onChange={(e) => setForm({ ...form, quantity: e.target.value })} />
           <Input size="sm" type="number" min="0" step="0.01" placeholder="Unit price" value={form.unit_price} aria-label="Unit price"
@@ -272,7 +272,7 @@ export default function DealLineItemsPanel({ dealId, onRollup, onCountChange }) 
             <option value="cost">Cost line</option>
           </Select>
         </div>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <div className="col-span-2">
             {form.kind === 'cost' && (
               <Input size="sm" placeholder="Cost category (optional — e.g. production, install)" aria-label="Category"

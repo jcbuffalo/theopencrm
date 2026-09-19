@@ -14,9 +14,11 @@ export default function RequestAccess() {
   const [form, setForm] = useState({ name: '', email: '', password: '', company: '', reason: '' });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  // 'pending' (approval-gated deployment) | 'active' (open signup — account
-  // is ready immediately); null until submitted.
+  // 'pending' (approval-gated deployment) | 'active' (open signup, no
+  // verification needed) | 'verify' (open signup, but must click a
+  // verification link before signing in); null until submitted.
   const [success, setSuccess] = useState(null);
+  const [resendStatus, setResendStatus] = useState(null); // null | 'sending' | 'sent' | 'failed'
 
   const submit = async (e) => {
     e.preventDefault();
@@ -24,7 +26,8 @@ export default function RequestAccess() {
     setError('');
     try {
       const r = await api.post('/request-access', form);
-      if (r.data.active) setSuccess('active');
+      if (r.data.active && r.data.verification_required) setSuccess('verify');
+      else if (r.data.active) setSuccess('active');
       else if (r.data.pending) setSuccess('pending');
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to submit request. Please try again.');
@@ -33,6 +36,51 @@ export default function RequestAccess() {
     }
   };
 
+  const resendVerification = async () => {
+    if (!form.email) return;
+    setResendStatus('sending');
+    try {
+      await api.post('/auth/resend-verification', { email: form.email });
+      setResendStatus('sent');
+    } catch {
+      setResendStatus('failed');
+    }
+  };
+
+  if (success === 'verify') {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8 max-w-md w-full text-center">
+          <div className="text-5xl mb-4">✉️</div>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">Check your inbox</h1>
+          <p className="text-gray-600 mb-1">
+            We sent a link to <strong>{form.email}</strong> — click it to verify
+            your email, then sign in.
+          </p>
+          <p className="text-sm text-gray-500 mb-6">
+            Didn't get it? Check spam, or send it again below.
+          </p>
+          <div className="flex flex-col gap-2 items-center">
+            <button
+              onClick={resendVerification}
+              disabled={resendStatus === 'sending' || resendStatus === 'sent'}
+              className="px-4 py-2 bg-brand-blue hover:bg-brand-blue-dark text-white rounded-lg text-sm font-medium disabled:opacity-50"
+            >
+              {resendStatus === 'sending' ? 'Sending…' : resendStatus === 'sent' ? '✓ Sent' : 'Resend verification email'}
+            </button>
+            <button
+              onClick={() => navigate('/login')}
+              className="px-3 py-1.5 text-sm text-gray-600 hover:underline"
+            >Go to sign in</button>
+          </div>
+          {resendStatus === 'failed' && (
+            <p className="text-xs text-red-700 mt-3">Couldn't send. Try again, or contact support.</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   if (success === 'active') {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
@@ -40,8 +88,7 @@ export default function RequestAccess() {
           <div className="text-5xl mb-4">🎉</div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Your workspace is ready</h1>
           <p className="text-gray-600 mb-6">
-            Your account is active — sign in now to get started. You may be asked
-            to verify your email address on first sign-in.
+            Your account is active — sign in now to get started.
           </p>
           <button
             onClick={() => navigate('/login')}

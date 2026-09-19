@@ -47,7 +47,7 @@ export default function DemoBanner() {
   return (
     <div className="bg-violet-600 text-white text-xs sm:text-sm">
       <div className="max-w-7xl mx-auto px-4 py-1.5 flex items-center justify-between gap-3">
-        <span className="min-w-0 truncate">
+        <span className="min-w-0 line-clamp-2 sm:line-clamp-none sm:truncate">
           <span className="font-semibold">Sample data is loaded</span>
           <span className="text-violet-100">{summary ? ` (${summary})` : ''}. Explore freely — clear it when you're ready to run your real business.</span>
         </span>

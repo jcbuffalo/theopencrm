@@ -8,6 +8,9 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import HeroPreview from '../components/HeroPreview';
 import { TOTAL_STAGE_COUNT } from '../zangStages';
+import { VERTICALS } from '../marketing/verticals';
+import { COMPARISONS, SHARED_DEMO } from '../marketing/comparisons';
+import { TellItDemo, BuildMyCrmButton } from '../components/MarketingShell';
 
 function ContactForm() {
   const [form, setForm] = useState({ name: '', email: '', company: '', message: '' });
@@ -93,16 +96,24 @@ function ContactForm() {
   );
 }
 
+// Ribbon auto-retires after this date so the page never shows a stale
+// "just launched" claim. Bump the date (or delete the ribbon block) for the
+// next announcement.
+const RIBBON_EXPIRES = new Date('2026-10-02T00:00:00Z');
+
 export default function Landing() {
+  const showRibbon = new Date() < RIBBON_EXPIRES;
   return (
     <div className="min-h-screen bg-white">
-      {/* Launch announcement ribbon */}
-      <div className="bg-gray-900 text-gray-100 text-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 text-center">
-          <span className="font-semibold text-white">Sept 18:</span> The Open CRM is now fully open source on GitHub.{' '}
-          <Link to="/launch" className="underline text-white font-semibold hover:no-underline">Read the launch post →</Link>
+      {/* Launch announcement ribbon — self-expiring, see RIBBON_EXPIRES above */}
+      {showRibbon && (
+        <div className="bg-gray-900 text-gray-100 text-sm">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 text-center">
+            <span className="font-semibold text-white">Now open source — v1.0.</span>{' '}
+            <Link to="/launch" className="underline text-white font-semibold hover:no-underline">Read the launch post →</Link>
+          </div>
         </div>
-      </div>
+      )}
       {/* Navigation */}
       <nav className="bg-white border-b border-gray-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
@@ -116,7 +127,7 @@ export default function Landing() {
           <div className="flex gap-3 sm:gap-6 items-center">
             <a href="#whats-included" className="hidden md:inline-flex text-gray-600 hover:text-gray-900 text-sm py-2 items-center">What's Included</a>
             <a href="#customizations" className="hidden md:inline-flex text-gray-600 hover:text-gray-900 text-sm py-2 items-center">Add-ons</a>
-            <a href="#pricing" className="hidden md:inline-flex text-gray-600 hover:text-gray-900 text-sm py-2 items-center">Pricing</a>
+            <a href="#pricing" className="inline-flex text-gray-600 hover:text-gray-900 text-sm py-2 items-center">Pricing</a>
             <Link to="/checklist" className="hidden md:inline-flex text-brand-blue hover:text-brand-blue-dark text-sm font-medium py-2 items-center focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-blue rounded">Free Checklist</Link>
             <Link to="/login" className="px-4 py-2 bg-brand-blue hover:bg-brand-blue-dark text-white rounded-lg text-sm font-semibold min-h-[44px] inline-flex items-center focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-blue focus-visible:ring-offset-2">
               Sign In
@@ -126,11 +137,11 @@ export default function Landing() {
       </nav>
 
       {/* Hero Section */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-24">
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-24">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-center">
           <div>
             <div className="inline-block px-3 py-1 mb-5 bg-brand-blue/10 text-brand-blue rounded-full text-xs font-semibold uppercase tracking-wider">
-              Open Source · Self-Host Free · Hosted from $15
+              Open Source · Free to Start · Hosted Plans from $15
             </div>
             <h2 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-gray-900 mb-5 leading-tight">
               A full, open-source CRM with an AI copilot as the front door.
@@ -138,7 +149,7 @@ export default function Landing() {
             <p className="text-xl sm:text-2xl text-gray-700 mb-6 leading-snug">
               Run it yourself for $0, or let us host it from $15 a seat — a fraction of what HubSpot charges. AI on top, usage-based.
             </p>
-            <p className="text-base sm:text-lg text-gray-600 mb-10 leading-relaxed">
+            <p className="hidden sm:block text-base sm:text-lg text-gray-600 mb-10 leading-relaxed">
               The incumbents charge $90–100 a seat for tools you hunt through. The Open CRM is open source (AGPL-3.0) — self-host it free, or get fully-managed hosting from $15 a seat — with a Chat-First copilot that actually does the work. AI is pay-as-you-go on top, or bring your own Anthropic key and pay no markup.
             </p>
             <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
@@ -150,12 +161,12 @@ export default function Landing() {
               </a>
             </div>
             <p className="text-gray-600 text-sm mt-5">
-              Currently early access · Already a user? <Link to="/login" className="text-brand-blue underline hover:no-underline">Sign in</Link> · <a href="https://github.com/jcbuffalo/theopencrm" target="_blank" rel="noreferrer" className="text-brand-blue underline hover:no-underline">Source on GitHub</a>
+              Sign up and you're in — no approval queue · Already a user? <Link to="/login" className="text-brand-blue underline hover:no-underline">Sign in</Link> · <a href="https://github.com/jcbuffalo/theopencrm" target="_blank" rel="noreferrer" className="text-brand-blue underline hover:no-underline">Source on GitHub</a>
             </p>
           </div>
           <div>
             <HeroPreview />
-            <p className="text-xs text-gray-500 text-center mt-3">A live look at the Manufacturer's-Rep edition. Same screens you'll see when you sign in.</p>
+            <p className="text-xs text-gray-500 text-center mt-3">Shown: the manufacturer's-rep edition. New workspaces start on the standard 6-stage pipeline — the same underlying screens, different stage names.</p>
           </div>
         </div>
       </section>
@@ -235,6 +246,56 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* Built for how you sell — the spec-203 wedge. Links every vertical
+          page + comparison page and mirrors the "Tell it how you sell" demo
+          those pages use. Hero positioning is deliberately untouched here;
+          that call is the owner's. */}
+      <section id="how-you-sell" className="py-16 sm:py-20 border-b border-gray-200">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="max-w-3xl mb-10">
+            <div className="inline-block px-3 py-1 mb-4 bg-brand-blue/10 text-brand-blue rounded-full text-xs font-semibold uppercase tracking-wider">
+              Built for how you sell
+            </div>
+            <h3 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-4 leading-tight">
+              Pick your business. The CRM configures around it.
+            </h3>
+            <p className="text-base sm:text-lg text-gray-700 leading-relaxed">
+              Most CRMs hand you a six-stage funnel and a settings page. Here the first screen after signup is one text box: describe how you sell, the way you would to a new hire. It proposes the stages, the fields, a follow-up rule and a saved view. You tick what you want. Or start from one of these twelve.
+            </p>
+          </div>
+
+          <ul className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-12">
+            {VERTICALS.map((v) => (
+              <li key={v.id}>
+                <Link
+                  to={`/crm-for/${v.slug}`}
+                  className="block h-full min-h-[44px] rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-900 hover:border-brand-blue hover:text-brand-blue transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-blue"
+                >
+                  {v.name}
+                </Link>
+              </li>
+            ))}
+          </ul>
+
+          <div className="mb-12">
+            <TellItDemo demo={SHARED_DEMO} />
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-8">
+            <BuildMyCrmButton />
+            <p className="text-sm text-gray-600">
+              Switching from something?{' '}
+              {COMPARISONS.map((c, i) => (
+                <React.Fragment key={c.slug}>
+                  {i > 0 && <span aria-hidden="true"> · </span>}
+                  <Link to={c.path} className="text-brand-blue underline hover:no-underline whitespace-nowrap">{c.eyebrow}</Link>
+                </React.Fragment>
+              ))}
+            </p>
+          </div>
+        </div>
+      </section>
+
       {/* Vision — the future-facing pitch */}
       <section className="bg-gradient-to-br from-brand-blue to-brand-blue-dark text-white py-20">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -306,7 +367,7 @@ export default function Landing() {
             {[
               {
                 title: 'Stand up in a session',
-                description: 'Pre-built pipeline, contacts, deals, activities, quotes — working out of the box. No implementation consultants. No six-week kickoff. Request early-access today; we approve same-day during the early-access window so you can demo tomorrow.',
+                description: 'Pre-built pipeline, contacts, deals, activities, quotes — working out of the box. No implementation consultants. No six-week kickoff. Sign up and you\'re in — no approval queue — so you can demo today.',
                 icon: '⚡',
               },
               {
@@ -350,7 +411,7 @@ export default function Landing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <h3 className="text-4xl font-bold text-gray-900 mb-4 text-center">Everything Out of the Box</h3>
           <p className="text-xl text-gray-600 text-center mb-16 max-w-2xl mx-auto">
-            Every plan includes our complete CRM foundation. No upgrades needed for basic features.
+            Every account gets the complete CRM — no tier gates on functionality, ever.
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
@@ -359,15 +420,20 @@ export default function Landing() {
               <h4 className="text-2xl font-bold text-gray-900 mb-6">Core CRM Included</h4>
               <ul className="space-y-4">
                 {[
+                  'Chat-First AI Copilot — the front door; confirm-first writes, included free',
                   'Contact & Company Management — Full profiles with custom fields',
                   'Sales Pipeline — Kanban board with drag-to-stage deal movement',
                   'Deal Tracking — Amount, probability, close date, custom stages',
+                  'Email Integration — Two-way sync, tracking, and sequences',
                   'Activities Log — Calls, emails, meetings with timestamps',
                   'Task Management — Due dates, priorities, ownership tracking',
+                  'Advanced Reporting — Forecasting, custom dashboards, win/loss analysis',
+                  'Bulk Import/Export — HubSpot/Salesforce import, CSV export anytime',
+                  'Custom Fields & API Webhooks — Extend records, wire up your own tools',
+                  'Extension Library — 57 ready-made automations, one click to install',
                   'Search & Filters — Find contacts/deals in seconds',
-                  'User Management — Team access controls and permissions',
                   'Real-time Dashboard — Key metrics at a glance',
-                  'Export to CSV — Reports and data export anytime',
+                  'User Management — Team access controls and permissions',
                   'Google OAuth — Secure login, no password management',
                 ].map((feature, i) => (
                   <li key={i} className="flex gap-3 items-start">
@@ -401,8 +467,8 @@ export default function Landing() {
                   <p className="text-gray-600"><strong>Auto Migrations</strong> — Schema updates on startup</p>
                 </div>
                 <div>
-                  <h5 className="font-semibold text-gray-900 mb-3">AI Integration Ready</h5>
-                  <p className="text-gray-600"><strong>Claude API</strong> — Available for custom enrichment & analysis</p>
+                  <h5 className="font-semibold text-gray-900 mb-3">AI, built in</h5>
+                  <p className="text-gray-600"><strong>Claude</strong> — Powers the chat copilot, deal summaries, follow-up drafts, and the extension builder. Pay-as-you-go on top, or bring your own key.</p>
                 </div>
               </div>
             </div>
@@ -413,64 +479,50 @@ export default function Landing() {
       {/* Customizations / Add-ons */}
       <section id="customizations" className="bg-blue-50 py-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <h3 className="text-4xl font-bold text-gray-900 mb-4 text-center">Customizations Available</h3>
+          <h3 className="text-4xl font-bold text-gray-900 mb-4 text-center">Beyond the extension library</h3>
           <p className="text-xl text-gray-600 text-center mb-16 max-w-2xl mx-auto">
-            Have unique needs? We can build these for your team.
+            Everything above ships free on every account. These are the things that genuinely need a
+            conversation first.
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
             {[
               {
-                title: 'AI Contact Enrichment',
-                description: 'Claude automatically generates contact summaries and next-action suggestions from your notes.',
+                title: 'A new white-label vertical',
+                description: 'Your own stage set, terminology, and entities — a config addition, not a fork. We\'ve done it for two verticals already.',
                 badge: 'Custom',
               },
               {
-                title: 'Deal Health Scoring',
-                description: 'AI analyzes deals for risk factors and generates win probability predictions.',
+                title: 'Data migration & onboarding',
+                description: 'Hands-on help moving off Salesforce/HubSpot beyond the self-serve CSV import — mapping, cleanup, and a guided cutover.',
                 badge: 'Custom',
               },
               {
-                title: 'Activity Auto-Summarization',
-                description: 'Automatic summaries of calls and emails with key action items extracted.',
-                badge: 'Professional+',
-              },
-              {
-                title: 'Email Integration',
-                description: 'Sync emails, calendar, and attachments. Auto-log activities from your inbox.',
+                title: 'Integrations outside the sandbox',
+                description: 'The extension sandbox has no outbound network access by design. Slack, niche vendor APIs, and other outside-the-allowlist integrations are built as one-off connectors.',
                 badge: 'Custom',
               },
               {
-                title: 'Slack Integration',
-                description: 'Get deal alerts, activity summaries, and task reminders in Slack.',
-                badge: 'Custom',
+                title: 'SSO (OIDC) + SCIM',
+                description: 'Built and shipped, off by default — enabled for your org on request.',
+                badge: 'Enterprise',
               },
               {
-                title: 'Advanced Reporting',
-                description: 'Pipeline forecasting, win/loss analysis, custom KPI dashboards.',
-                badge: 'Custom',
+                title: 'Private-cloud / on-prem deployment',
+                description: 'Run the hosted experience on your own cloud account or infrastructure.',
+                badge: 'Enterprise',
               },
               {
-                title: 'Bulk Import/Export',
-                description: 'Migrate from Salesforce, HubSpot, or spreadsheets. Keep your history.',
-                badge: 'Custom',
-              },
-              {
-                title: 'Custom Fields & Objects',
-                description: 'Add industry-specific fields or entirely new object types.',
-                badge: 'Custom',
-              },
-              {
-                title: 'API Webhooks',
-                description: 'Trigger workflows on deal stage changes, new contacts, activity creation.',
-                badge: 'Custom',
+                title: 'Dedicated support + SLA',
+                description: 'A committed response time and a named point of contact.',
+                badge: 'Enterprise',
               },
             ].map((item, i) => (
               <div key={i} className="bg-white rounded-lg p-6 shadow-sm hover:shadow-md transition-shadow">
                 <div className="flex justify-between items-start mb-3">
                   <h4 className="text-lg font-semibold text-gray-900 flex-1">{item.title}</h4>
                   <span className={`text-xs font-semibold px-3 py-1 rounded-full whitespace-nowrap ml-2 ${
-                    item.badge.includes('Professional')
+                    item.badge === 'Enterprise'
                       ? 'bg-blue-100 text-blue-700'
                       : 'bg-purple-100 text-purple-700'
                   }`}>
@@ -499,13 +551,13 @@ export default function Landing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <h3 className="text-4xl font-bold text-gray-900 mb-4 text-center">Open source at the core. Fair pricing on top.</h3>
           <p className="text-xl text-gray-600 text-center mb-4 max-w-3xl mx-auto">
-            Run the whole CRM yourself for <span className="font-semibold text-brand-blue">$0</span>, or let us host it from <span className="font-semibold text-brand-blue">$15 a seat</span> — a fraction of what the incumbents charge. AI sits on top: pay-as-you-go, or bring your own Anthropic key and pay no markup.
+            Run the whole CRM yourself for <span className="font-semibold text-brand-blue">$0</span>, try it hosted free, or step up to paid hosted plans from <span className="font-semibold text-brand-blue">$15 a seat</span> — a fraction of what the incumbents charge. AI sits on top: pay-as-you-go, or bring your own Anthropic key and pay no markup.
           </p>
           <p className="text-sm text-gray-500 text-center mb-16 max-w-2xl mx-auto">
-            The software is open source (AGPL-3.0) and yours either way. Early-access pricing — finalized at general availability. AI usage is billed on top of hosted plans, or bring your own key; a quiet month adds nothing.
+            The software is open source (AGPL-3.0) and yours either way. AI usage is billed on top of hosted plans, or bring your own key; a quiet month adds nothing.
           </p>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 lg:gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 lg:gap-4">
             {[
               {
                 name: 'Self-Host',
@@ -522,13 +574,27 @@ export default function Landing() {
                 icon: '🌍',
               },
               {
-                name: 'Hosted',
-                price: 'from $15',
-                period: 'per seat / month',
-                description: 'We run it; you just sign in',
+                name: 'Free (hosted)',
+                price: '$0',
+                period: 'per workspace / forever',
+                description: 'Try the full product hosted — no card required',
                 features: [
+                  '1 seat, up to 100 contacts, 10 deals, 100 companies',
+                  'The full CRM — every module, no feature gates',
                   'Fully managed + autoscaled — nothing to run',
-                  'The full CRM — turn modules on as you need them',
+                  'AI pay-as-you-go, or bring your own key (no markup)',
+                  'Upgrade any time as you outgrow the caps',
+                ],
+                icon: '🌱',
+              },
+              {
+                name: 'Starter',
+                price: '$15',
+                period: 'per seat / month',
+                description: 'A working team, no seat caps on data',
+                features: [
+                  'Up to 10 seats, unlimited contacts/deals/companies',
+                  'The full CRM — every module, no feature gates',
                   'Roles + permissions for the whole team',
                   'AI pay-as-you-go, or bring your own key (no markup)',
                   'Radically under HubSpot ($90–100/seat)',
@@ -537,10 +603,23 @@ export default function Landing() {
                 icon: '⚡',
               },
               {
+                name: 'Pro',
+                price: '$39',
+                period: 'per seat / month',
+                description: 'For teams leaning on extensions',
+                features: [
+                  'Up to 50 seats, unlimited contacts/deals/companies',
+                  'Everything in Starter',
+                  'Extension autonomous mode (unattended writes)',
+                  'Priority support',
+                ],
+                icon: '🚀',
+              },
+              {
                 name: 'AI',
                 price: 'Usage',
                 period: 'pay-as-you-go, or bring your own key',
-                description: 'Usage-based, on top of hosting',
+                description: 'Usage-based, on top of any hosted plan',
                 features: [
                   'Chat copilot, deal summaries, follow-up drafts',
                   'Billed by actual usage — no AI seat SKU',
@@ -556,7 +635,7 @@ export default function Landing() {
                 period: 'support + SLA',
                 description: 'Where compliance & scale live',
                 features: [
-                  'Everything in Hosted, plus:',
+                  'Everything in Pro, plus:',
                   'SSO (OIDC) + SCIM, audit, white-label',
                   'Volume AI rates + committed-use discounts',
                   'Dedicated support + SLA',
@@ -655,7 +734,7 @@ export default function Landing() {
             <p className="text-gray-600 mb-2 text-sm max-w-2xl mx-auto">
               <span className="font-semibold">The math:</span> HubSpot Sales Hub runs $100/user/month — a 10-person team pays $12,000 a year before they've closed a deal. Managed hosting here starts at $15/seat ($1,800/yr for that same team), the self-host option is $0, and AI is pay-as-you-go on top — or bring your own key. Either way the software is open source and yours.
             </p>
-            <p className="text-gray-600 mb-4">Currently in early access. Usage-based AI billing finalized at general availability.</p>
+            <p className="text-gray-600 mb-4">Sign up and you're in — no approval queue. AI usage pricing may be tuned as we learn from real-world usage.</p>
             <p className="text-gray-600">Have questions? <a href="mailto:johnbcoles@gmail.com" className="text-brand-blue font-semibold underline hover:no-underline">Email us</a></p>
           </div>
         </div>
@@ -763,7 +842,7 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* Honest CTA — replaces "Try Free for 30 Days" since we're early-access */}
+      {/* Honest CTA — replaces "Try Free for 30 Days" since signup is self-serve, not a trial */}
       <section className="bg-gradient-to-r from-brand-blue to-brand-blue-dark text-white py-16 sm:py-20">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
           <h3 className="text-3xl sm:text-4xl font-bold mb-6">Stop paying seat licenses for software that doesn't fit.</h3>
@@ -778,7 +857,7 @@ export default function Landing() {
               See the full deck
             </Link>
           </div>
-          <p className="text-xs text-blue-200 mt-6">Currently early access — your request gets a personal response within 24 hours.</p>
+          <p className="text-xs text-blue-200 mt-6">Sign up and you're in — no approval queue.</p>
         </div>
       </section>
 

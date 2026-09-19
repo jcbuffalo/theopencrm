@@ -63,8 +63,13 @@ export default function LeadForm() {
 
   const shell = (children) => (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4 py-10">
-      <div className="w-full max-w-md bg-white border border-gray-200 rounded-2xl shadow-sm p-6 sm:p-8">
-        {children}
+      <div className="w-full max-w-md">
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-6 sm:p-8">
+          {children}
+        </div>
+        <p className="text-center text-[11px] text-gray-400 mt-4">
+          Powered by <a href="https://app.theopencrm.com" target="_blank" rel="noreferrer" className="text-gray-500 hover:text-gray-700 underline">The Open CRM</a> →
+        </p>
       </div>
     </div>
   );

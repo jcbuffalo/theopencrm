@@ -60,7 +60,7 @@ export default function LaunchPost() {
             HubSpot and Salesforce import presets for switchers.
           </p>
           <p>
-            The front door is a chat copilot with 52 tools. It reads anything and
+            The front door is a chat copilot with 53 tools. It reads anything and
             proposes any write — and every write is confirm-first: you see exactly
             what will change and click Apply, or you don't. The same discipline
             extends to the extension library: fifty-seven one-click extensions (stale-deal

@@ -71,35 +71,54 @@ function transportKind() {
 // Neutral, current product name — the previous "ZANG Flow" literal leaked one
 // white-label tenant's brand into every org's outbound mail (and is a stale
 // product name). An org display name, when passed, still fronts the sender.
-const PRODUCT_NAME = 'The Open CRM';
-function senderName(orgName) {
-  return orgName ? `"${orgName.replace(/"/g, '')} via ${PRODUCT_NAME}"` : `"${PRODUCT_NAME}"`;
+const PRODUCT_NAME = process.env.PRODUCT_NAME || 'The Open CRM';
+// `verbatim` = an org-chosen sender identity (services/senderIdentity.js):
+// the name goes on the From: line as-is ("John Coles") instead of the
+// "<Org> via <Product>" default used for platform/transactional mail. The
+// envelope ADDRESS is always SMTP_FROM either way.
+function senderName(orgName, verbatim = false) {
+  const clean = orgName ? String(orgName).replace(/["\r\n<>]/g, '').trim() : '';
+  if (clean && verbatim) return `"${clean}"`;
+  return clean ? `"${clean} via ${PRODUCT_NAME}"` : `"${PRODUCT_NAME}"`;
+}
+
+// The From: header string a send would use — surfaced to Settings → Workspace
+// so an owner can preview exactly how their mail will show up.
+function fromHeader({ fromName, verbatim = false } = {}) {
+  return `${senderName(fromName, verbatim)} <${SMTP_FROM}>`;
 }
 
 /**
  * Send an email. Returns { ok: true, kind } on success or when console-logged in dev.
  * Throws on real send failure.
+ *
+ *   fromNameVerbatim — use `fromName` as the whole display name (org sender identity)
+ *   listUnsubscribe  — URL for the RFC 2369 List-Unsubscribe header (bulk /
+ *                      sequence mail; lets Gmail/Outlook render their own
+ *                      one-click unsubscribe next to the footer link)
  */
-async function sendMail({ to, replyTo, subject, html, text, attachments, fromName }) {
+async function sendMail({ to, replyTo, subject, html, text, attachments, fromName, fromNameVerbatim = false, listUnsubscribe }) {
   if (!to) throw new Error('sendMail: `to` required');
   const { transport, kind } = getTransport();
 
   if (!transport) {
     console.log('📧 (email not configured — would have sent):', {
-      to, subject, replyTo,
+      to, subject, replyTo, from: fromHeader({ fromName, verbatim: fromNameVerbatim }),
       preview: (text || html || '').substring(0, 200),
     });
     return { ok: true, kind: 'console' };
   }
 
+  const headers = listUnsubscribe ? { 'List-Unsubscribe': `<${listUnsubscribe}>` } : undefined;
   const info = await transport.sendMail({
-    from: `${senderName(fromName)} <${SMTP_FROM}>`,
+    from: fromHeader({ fromName, verbatim: fromNameVerbatim }),
     to,
     replyTo: replyTo || undefined,
     subject,
     html,
     text,
     attachments,
+    headers,
   });
 
   return { ok: true, kind, messageId: info.messageId };
@@ -109,4 +128,6 @@ module.exports = {
   isConfigured,
   transportKind,
   sendMail,
+  fromHeader,
+  SMTP_FROM,
 };

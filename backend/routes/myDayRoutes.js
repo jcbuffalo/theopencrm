@@ -13,6 +13,9 @@
 //   • quietAccounts        — customer accounts with no touch in > 30 days
 //   • dealsNeedingAttention — open deals past their expected close date or with
 //                             no activity in > 14 days
+//   • nextSteps            — open deals whose committed next_step_date
+//                             (migration 172) is today or overdue, most overdue
+//                             first
 //   • has_data             — { deals, contacts, companies } row counts so the
 //                             Chat front door can pick its empty state without
 //                             fetching the full lists (null if the count fails)
@@ -135,10 +138,14 @@ router.get('/', async (req, res) => {
     // 4. Gone-quiet accounts — same last-touch scope as the Accounts rollup
     //    (activities against the account's deals OR its company's contacts),
     //    quiet = no touch in > 30 days (never-touched counts as quiet).
-    //    Quietest (oldest / never touched) first.
+    //    Quietest (oldest / never touched) first. `c.last_touch_at` (migration
+    //    169) is an explicit "Log a touch" override for accounts with no
+    //    matching Activity row yet — GREATEST'd against the activity-derived
+    //    value so either kind of touch resets the quiet clock.
     const quietAccounts = await section('quietAccounts', req, async () => {
       const r = await pool.query(
-        `SELECT c.id, c.name, c.industry, c.lifecycle_stage, lt.last_touch
+        `SELECT c.id, c.name, c.industry, c.lifecycle_stage,
+                GREATEST(lt.last_touch, c.last_touch_at) AS last_touch
            FROM companies c
            LEFT JOIN LATERAL (
              SELECT MAX(COALESCE(a.activity_date, a.created_at)) AS last_touch
@@ -149,8 +156,9 @@ router.get('/', async (req, res) => {
            ) lt ON TRUE
           WHERE c.${sf} = $1 AND c.type = 'customer'
             AND COALESCE(c.lifecycle_stage, 'active') <> 'churned'
-            AND (lt.last_touch IS NULL OR lt.last_touch < NOW() - INTERVAL '30 days')
-          ORDER BY lt.last_touch ASC NULLS FIRST, c.name ASC
+            AND (GREATEST(lt.last_touch, c.last_touch_at) IS NULL
+                 OR GREATEST(lt.last_touch, c.last_touch_at) < NOW() - INTERVAL '30 days')
+          ORDER BY GREATEST(lt.last_touch, c.last_touch_at) ASC NULLS FIRST, c.name ASC
           LIMIT 10`,
         [sv]
       );
@@ -219,12 +227,39 @@ router.get('/', async (req, res) => {
       else console.warn('My Day section "has_data" failed:', error.message);
     }
 
+    // 7. Next steps (migration 172) — open deals whose committed next step is
+    //    due today or overdue, most overdue first. Runs LAST so the query
+    //    order the ordered-mock tests rely on for sections 1–6 is unchanged;
+    //    a pre-172 database (no column) simply degrades this section to [].
+    const nextSteps = await section('nextSteps', req, async () => {
+      const r = await pool.query(
+        `SELECT d.id, d.title, d.stage, d.deal_type, d.amount, d.next_step, d.next_step_date,
+                COALESCE(cu.name, co.name) AS company_name,
+                CASE WHEN c.id IS NOT NULL THEN c.first_name || ' ' || c.last_name END AS contact_name
+           FROM deals d
+           LEFT JOIN companies co ON d.company_id  = co.id
+           LEFT JOIN companies cu ON d.customer_id = cu.id
+           LEFT JOIN contacts  c  ON d.contact_id  = c.id
+          WHERE d.${sf} = $1
+            AND d.next_step_date IS NOT NULL AND d.next_step_date <= CURRENT_DATE
+            AND d.stage NOT IN (${CLOSED_DEAL_STAGES.map((s) => `'${s}'`).join(', ')})
+          ORDER BY d.next_step_date ASC, d.amount DESC NULLS LAST, d.id ASC
+          LIMIT 25`,
+        [sv]
+      );
+      return r.rows.map((d) => ({
+        ...d,
+        overdue_days: Math.max(0, daysSince(d.next_step_date, now) ?? 0),
+      }));
+    });
+
     res.json({
       tasksDue,
       renewals,
       atRiskAccounts,
       quietAccounts,
       dealsNeedingAttention,
+      nextSteps,
       has_data,
       counts: {
         tasksDue: tasksDue.length,
@@ -232,8 +267,9 @@ router.get('/', async (req, res) => {
         atRiskAccounts: atRiskAccounts.length,
         quietAccounts: quietAccounts.length,
         dealsNeedingAttention: dealsNeedingAttention.length,
+        nextSteps: nextSteps.length,
         total: tasksDue.length + renewals.length + atRiskAccounts.length
-             + quietAccounts.length + dealsNeedingAttention.length,
+             + quietAccounts.length + dealsNeedingAttention.length + nextSteps.length,
       },
     });
   } catch (error) {

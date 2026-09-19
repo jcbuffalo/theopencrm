@@ -40,7 +40,7 @@ export default function CookieBanner() {
   return (
     <div role="region" aria-label="Cookie notice" className="bg-gray-100 border-b border-gray-200 text-gray-600 text-xs">
       <div className="max-w-7xl mx-auto px-4 py-1.5 flex items-center justify-between gap-3">
-        <span className="min-w-0 truncate">
+        <span className="min-w-0 line-clamp-2 sm:line-clamp-none sm:truncate">
           Only strictly-necessary cookies and local storage, to keep you signed in. No analytics or tracking.{' '}
           <a href="/legal/cookies" className="underline hover:text-gray-900">Cookie policy</a>
         </span>

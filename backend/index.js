@@ -887,6 +887,23 @@ const aiBillingGateExceptStatus = (req, res, next) =>
 app.use('/api/ai', aiLimiter, _aiAuth, aiBillingGateExceptStatus, requireFeature('ai_features_enabled'), aiRoutes);
 console.log('✅ Mounted: /api/ai (per-IP rate limited + AI-billing gated + gated by ai_features_enabled)');
 
+// First-run workspace builder (spec 203). Mounted beside /api/ai rather than
+// under it so GET /templates stays reachable without an AI billing verdict;
+// POST /plan applies the billing gate + module flag per-route.
+const onboardingRoutes = require('./routes/onboardingRoutes');
+app.use('/api/onboarding', aiLimiter, onboardingRoutes);
+console.log('✅ Mounted: /api/onboarding (workspace builder — /plan is AI-billing gated + gated by ai_features_enabled)');
+
+// Saved workspace templates (spec 203 Phase 2, migration 171). Cloning is
+// deterministic (no AI) so it is NOT behind the AI billing gate; only the
+// super-admin generate-platform action calls the model, and callClaude meters
+// it like any other endpoint. Public gallery read is summaries-only.
+const workspaceTemplateRoutes = require('./routes/workspaceTemplateRoutes');
+const { publicFormLimiter: templateGalleryLimiter } = require('./middleware/rateLimits');
+app.use('/api/workspace-templates', workspaceTemplateRoutes);
+app.use('/api/public/workspace-templates', templateGalleryLimiter, workspaceTemplateRoutes.publicRouter);
+console.log('✅ Mounted: /api/workspace-templates + /api/public/workspace-templates (saved workspace templates)');
+
 // Drive Intel (Differentiation Bet #4, DRIVE_INTEL_SPEC.md). Three mount points:
 //   /api/drive                — OAuth + connection (Agent 1)
 //   /api/drive/folders        — folder search proxy (Agent 2 searchRouter)

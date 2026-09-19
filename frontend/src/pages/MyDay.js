@@ -14,9 +14,9 @@ import { Alert, Button, Card, Container, EmptyState, Icon, PageHeader, Spinner, 
 
 // My Day — the personal relationship work-queue at /today.
 //
-// A focused daily command center answering "what needs me today?" across five
-// signals: my due/overdue tasks, contracts renewing this month, at-risk
-// accounts, accounts gone quiet, and open deals losing momentum. It
+// A focused daily command center answering "what needs me today?" across six
+// signals: deal next steps due, my due/overdue tasks, contracts renewing this
+// month, at-risk accounts, accounts gone quiet, and open deals losing momentum. It
 // complements (never replaces) the Chat front door — Chat is where you talk to
 // the CRM; My Day is the scannable queue you work through with coffee.
 //
@@ -78,19 +78,30 @@ function SectionCard({ title, icon, count, tone, emptyMessage, footerLabel, onFo
   );
 }
 
-function Row({ onClick, primary, secondary, right }) {
+// `leading` (a checkbox) and `right` (a badge, or a one-tap action button)
+// each stop click propagation, so a nested interactive control never fires
+// the row's own onClick — the row itself is a div[role=button], not a real
+// <button>, precisely so it can safely contain one.
+function Row({ onClick, leading, primary, secondary, right }) {
+  const clickable = typeof onClick === 'function';
   return (
     <li>
-      <button
+      <div
+        role={clickable ? 'button' : undefined}
+        tabIndex={clickable ? 0 : undefined}
         onClick={onClick}
-        className="w-full text-left px-5 py-3 hover:bg-gray-50 transition flex items-center justify-between gap-3"
+        onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
+        className={`px-5 py-3 hover:bg-gray-50 transition flex items-center gap-3 ${clickable ? 'cursor-pointer' : ''}`}
       >
-        <span className="min-w-0">
+        {leading && (
+          <span className="flex-shrink-0" onClick={(e) => e.stopPropagation()}>{leading}</span>
+        )}
+        <span className="min-w-0 flex-1 text-left">
           <span className="block text-sm font-medium text-gray-900 truncate">{primary}</span>
           {secondary && <span className="block text-xs text-gray-500 truncate mt-0.5">{secondary}</span>}
         </span>
-        {right && <span className="flex-shrink-0">{right}</span>}
-      </button>
+        {right && <span className="flex-shrink-0" onClick={(e) => e.stopPropagation()}>{right}</span>}
+      </div>
     </li>
   );
 }
@@ -104,13 +115,83 @@ export default function MyDay() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // In-flight ids so a double-tap can't double-fire, mirroring Contacts.js's
+  // touchingIds pattern for "Mark touched".
+  const [completingIds, setCompletingIds] = useState(new Set());
+  const [touchingAccountIds, setTouchingAccountIds] = useState(new Set());
+  const [completingStepIds, setCompletingStepIds] = useState(new Set());
 
-  useEffect(() => {
-    api.get('/my-day')
-      .then((r) => { setData(r.data); setError(''); })
-      .catch((err) => setError(err.response?.data?.error || 'Failed to load your day'))
-      .finally(() => setLoading(false));
-  }, []);
+  const loadMyDay = () => api.get('/my-day')
+    .then((r) => { setData(r.data); setError(''); })
+    .catch((err) => setError(err.response?.data?.error || 'Failed to load your day'))
+    .finally(() => setLoading(false));
+
+  useEffect(() => { loadMyDay(); }, []);
+
+  // Inline complete — same PUT /tasks/:id { status: 'done' } call as
+  // pages/Tasks.js's toggleStatus, with optimistic removal from the queue
+  // (a task that's done no longer needs today's attention).
+  const completeTask = async (task) => {
+    setCompletingIds((s) => new Set(s).add(task.id));
+    setData((d) => (d ? {
+      ...d,
+      tasksDue: d.tasksDue.filter((t) => t.id !== task.id),
+      counts: { ...d.counts, tasksDue: d.counts.tasksDue - 1, total: d.counts.total - 1 },
+    } : d));
+    try {
+      await api.put(`/tasks/${task.id}`, { status: 'done' });
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to complete task');
+      loadMyDay(); // restore accurate state on failure
+    } finally {
+      setCompletingIds((s) => { const n = new Set(s); n.delete(task.id); return n; });
+    }
+  };
+
+  // "Done" on a next step clears it (PUT /deals/:id with explicit nulls —
+  // the route's next_step columns use present-key semantics, so null really
+  // clears). Optimistic removal; the deal drawer is where you'd set the next
+  // one.
+  const completeNextStep = async (deal) => {
+    setCompletingStepIds((s) => new Set(s).add(deal.id));
+    setData((d) => (d ? {
+      ...d,
+      nextSteps: d.nextSteps.filter((x) => x.id !== deal.id),
+      counts: { ...d.counts, nextSteps: (d.counts.nextSteps || 1) - 1, total: d.counts.total - 1 },
+    } : d));
+    try {
+      await api.put(`/deals/${deal.id}`, { next_step: null, next_step_date: null });
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to clear next step');
+      loadMyDay();
+    } finally {
+      setCompletingStepIds((s) => { const n = new Set(s); n.delete(deal.id); return n; });
+    }
+  };
+
+  // One-tap "log a touch" for a gone-quiet account. NOTE: there is no
+  // POST /companies/:id/touch endpoint yet (only contacts have a
+  // last_touch_at column to stamp — see contactRoutes.js :302's
+  // POST /contacts/:id/touch, and myDayRoutes.js's quietAccounts, which
+  // derives an account's last touch dynamically from its deals'/contacts'
+  // activities rather than a stored column). This call is wired for when
+  // that backend route ships; today it surfaces a normal error banner
+  // instead of doing nothing.
+  const logAccountTouch = async (account) => {
+    setTouchingAccountIds((s) => new Set(s).add(account.id));
+    try {
+      await api.post(`/companies/${account.id}/touch`);
+      setData((d) => (d ? {
+        ...d,
+        quietAccounts: d.quietAccounts.filter((a) => a.id !== account.id),
+        counts: { ...d.counts, quietAccounts: d.counts.quietAccounts - 1, total: d.counts.total - 1 },
+      } : d));
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to log touch');
+    } finally {
+      setTouchingAccountIds((s) => { const n = new Set(s); n.delete(account.id); return n; });
+    }
+  };
 
   // Account rows deep-link into Account 360 when the profile runs the
   // account-management motion; otherwise fall back to a Companies search so
@@ -154,6 +235,50 @@ export default function MyDay() {
               </Card>
             ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {/* Next steps — the rep's own commitments (deals.next_step /
+                  next_step_date, migration 172) due today or overdue, most
+                  overdue first. Leads the queue: a promise you made beats a
+                  task the system inferred. Absent against a pre-172 backend. */}
+              {Array.isArray(data.nextSteps) && (
+                <div className="lg:col-span-2">
+                  <SectionCard
+                    title="Next steps due"
+                    icon="arrow-right"
+                    count={data.nextSteps.length}
+                    tone="red"
+                    emptyMessage="No next steps due. Set one on a deal and it'll show up here on the day."
+                    footerLabel="All deals"
+                    onFooter={() => navigate('/deals')}
+                  >
+                    {data.nextSteps.map((d) => (
+                      <Row
+                        key={`ns-${d.id}`}
+                        onClick={() => navigate(`/deals?dealId=${d.id}`)}
+                        primary={d.next_step}
+                        secondary={[d.title, d.company_name || d.contact_name, fmtMoney(d.amount)].filter(Boolean).join(' · ') || null}
+                        right={
+                          <span className="flex items-center gap-2">
+                            <span className={`text-xs whitespace-nowrap ${d.overdue_days > 0 ? 'text-danger-600 font-semibold' : 'text-gray-500'}`}>
+                              {d.overdue_days > 0 ? `${d.overdue_days}d overdue` : 'due today'}
+                            </span>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              icon="check"
+                              onClick={() => completeNextStep(d)}
+                              loading={completingStepIds.has(d.id)}
+                              loadingLabel="Saving…"
+                            >
+                              Done
+                            </Button>
+                          </span>
+                        }
+                      />
+                    ))}
+                  </SectionCard>
+                </div>
+              )}
+
               {/* Tasks due — the queue's anchor, so it leads. */}
               <SectionCard
                 title="Tasks due"
@@ -167,6 +292,16 @@ export default function MyDay() {
                 {data.tasksDue.map((t) => (
                   <Row
                     key={`t-${t.id}`}
+                    leading={
+                      <input
+                        type="checkbox"
+                        checked={false}
+                        disabled={completingIds.has(t.id)}
+                        onChange={() => completeTask(t)}
+                        aria-label={`Mark "${t.title}" complete`}
+                        className="h-4 w-4 rounded border-gray-300 text-brand-blue focus:ring-brand-blue cursor-pointer disabled:opacity-50"
+                      />
+                    }
                     onClick={() => navigate('/tasks')}
                     primary={t.title}
                     secondary={t.deal_title || t.contact_name || null}
@@ -248,10 +383,22 @@ export default function MyDay() {
                     primary={a.name}
                     secondary={a.industry || null}
                     right={
-                      <span className="text-xs text-warning-700 whitespace-nowrap">
-                        {a.days_since_last_touch == null
-                          ? 'no touch yet'
-                          : `${a.days_since_last_touch}d quiet`}
+                      <span className="flex items-center gap-2">
+                        <span className="text-xs text-warning-700 whitespace-nowrap">
+                          {a.days_since_last_touch == null
+                            ? 'no touch yet'
+                            : `${a.days_since_last_touch}d quiet`}
+                        </span>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          icon="check"
+                          onClick={() => logAccountTouch(a)}
+                          loading={touchingAccountIds.has(a.id)}
+                          loadingLabel="Logging…"
+                        >
+                          Log a touch
+                        </Button>
                       </span>
                     }
                   />
@@ -272,7 +419,7 @@ export default function MyDay() {
                   {data.dealsNeedingAttention.map((d) => (
                     <Row
                       key={`d-${d.id}`}
-                      onClick={() => navigate(`/deals?search=${encodeURIComponent(d.title || '')}`)}
+                      onClick={() => navigate(`/deals?dealId=${d.id}`)}
                       primary={d.title}
                       secondary={[
                         d.customer_name || d.company_name,

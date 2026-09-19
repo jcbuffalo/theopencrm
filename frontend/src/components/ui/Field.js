@@ -20,8 +20,8 @@ export const CONTROL_BASE =
 
 const CONTROL_SIZE = {
   // Heights match Button sm/md so controls and buttons align on one row.
-  sm: 'px-2.5 py-1.5 text-sm min-h-[32px]',
-  md: 'px-3 py-2 text-sm min-h-[40px]',
+  sm: 'px-2.5 py-1.5 text-base sm:text-sm min-h-[36px]',
+  md: 'px-3 py-2 text-base sm:text-sm min-h-[40px]',
 };
 
 export function controlClasses({ size = 'md', error = false, className = '' } = {}) {

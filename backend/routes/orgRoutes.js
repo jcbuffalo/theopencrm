@@ -14,6 +14,8 @@
 //   POST   /invite                   — create an invite token (32-byte hex, 7-day expiry)
 //   DELETE /invites/:id              — cancel a pending invite
 //   DELETE /members/:id              — remove a member (sets their org_id = NULL)
+//   GET    /email-identity           — outbound From: name / Reply-To (+ effective preview)
+//   PUT    /email-identity           — owner/admin: set/clear sender_name, reply_to
 //
 // The accept-invite flow (where new users redeem the token) lives in a
 // separate file: routes/acceptInviteRoutes.js (no auth required there since
@@ -26,6 +28,11 @@ const pool = require('../db');
 // Tier seat caps (migration 136) — inert unless the org has an explicit
 // capped limits_tier; comped/paid/super-admin exempt. See services/tierLimits.js.
 const tierLimits = require('../services/tierLimits');
+// Outbound sender identity (From: name + Reply-To) — services/senderIdentity.js.
+const senderIdentity = require('../services/senderIdentity');
+const email = require('../services/email');
+const audit = require('../services/audit');
+const { requireOrgAdmin } = require('../middleware/adminAuth');
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -136,6 +143,64 @@ router.delete('/members/:id', async (req, res) => {
     res.json({ message: 'Member removed', user: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: 'Failed to remove member' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Outbound sender identity (Settings → Workspace → "Outbound email").
+//
+//   GET /api/org/email-identity — any member: stored sender_name / reply_to
+//       plus the EFFECTIVE From: header preview and whether a transport exists.
+//   PUT /api/org/email-identity { sender_name?, reply_to? } — org owner/admin
+//       (requireOrgAdmin). Either key null/'' clears. Stored on
+//       organizations.branding.email (services/senderIdentity.js). Audited.
+// ---------------------------------------------------------------------------
+router.get('/email-identity', async (req, res) => {
+  if (!req.orgId) return res.status(404).json({ error: 'No organization found' });
+  try {
+    const identity = await senderIdentity.getSenderIdentity(req.orgId);
+    res.json({
+      sender_name: identity.sender_name,
+      reply_to: identity.reply_to,
+      effective: {
+        from: email.fromHeader({ fromName: identity.fromName, verbatim: identity.fromNameIsCustom }),
+        reply_to: identity.replyTo || null,
+      },
+      email_configured: email.isConfigured(),
+      transport: email.transportKind(),
+    });
+  } catch (err) {
+    if (req.log) req.log.error('org_email_identity_get_failed', { error: err.message });
+    res.status(500).json({ error: 'Failed to load sender identity' });
+  }
+});
+
+router.put('/email-identity', requireOrgAdmin, async (req, res) => {
+  if (!req.orgId) return res.status(404).json({ error: 'No organization found' });
+  const norm = senderIdentity.normalizeInput(req.body);
+  if (norm.error) return res.status(400).json({ error: norm.error });
+  try {
+    const identity = await senderIdentity.saveSenderIdentity(req.orgId, norm.value);
+    if (!identity) return res.status(404).json({ error: 'Organization not found' });
+    audit.fromReq(req, {
+      event: audit.EVENTS.ORG_EMAIL_IDENTITY_UPDATED,
+      targetType: 'organization',
+      targetId: String(req.orgId),
+      meta: { fields: Object.keys(norm.value) },
+    });
+    res.json({
+      sender_name: identity.sender_name,
+      reply_to: identity.reply_to,
+      effective: {
+        from: email.fromHeader({ fromName: identity.fromName, verbatim: identity.fromNameIsCustom }),
+        reply_to: identity.replyTo || null,
+      },
+      email_configured: email.isConfigured(),
+      transport: email.transportKind(),
+    });
+  } catch (err) {
+    if (req.log) req.log.error('org_email_identity_put_failed', { error: err.message });
+    res.status(500).json({ error: 'Failed to save sender identity' });
   }
 });
 
