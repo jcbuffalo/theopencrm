@@ -11,6 +11,7 @@ const express = require('express');
 const compression = require('compression');
 const path = require('path');
 const fs = require('fs');
+const { isKnownRoute } = require('./routeManifest.cjs');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -137,11 +138,13 @@ const PUBLIC_META = {
 };
 
 let indexTemplate = null;
-function renderIndex(reqPath) {
+function renderIndex(reqPath, { notFound = false } = {}) {
   if (indexTemplate === null) {
     indexTemplate = fs.readFileSync(path.join(__dirname, 'build', 'index.html'), 'utf8');
   }
-  const meta = PUBLIC_META[reqPath];
+  const meta = notFound
+    ? { title: 'Page not found — The Open CRM', desc: 'That page does not exist.' }
+    : PUBLIC_META[reqPath];
   const canonical = `https://app.theopencrm.com${reqPath === '/' ? '/' : reqPath}`;
   // Needles are scoped to the canonical <link> and og:url so the JSON-LD's
   // application url (same literal) keeps pointing at the site root.
@@ -150,6 +153,13 @@ function renderIndex(reqPath) {
     .split(`property="og:url" content="${DEFAULT_CANONICAL}"`).join(`property="og:url" content="${canonical}"`);
   if (meta) {
     html = html.split(DEFAULT_TITLE).join(meta.title).split(DEFAULT_DESC).join(meta.desc);
+  }
+  if (notFound) {
+    // Real 404: keep crawlers from indexing junk paths, and drop the canonical
+    // so an unknown URL never claims to be the canonical of anything.
+    html = html
+      .replace(/<link rel="canonical"[^>]*>/, '')
+      .replace('</head>', '<meta name="robots" content="noindex, nofollow"></head>');
   }
   return html;
 }
@@ -274,10 +284,17 @@ app.get(/^\//, (req, res) => {
   // live on customers' own sites), everything else may not be framed at all.
   const embeddable = EMBEDDABLE_PREFIXES.some((p) => req.path.startsWith(p));
   res.set('Content-Security-Policy', embeddable ? CSP_EMBEDDABLE : CSP_DEFAULT);
-  res.type('html').send(renderIndex(req.path));
+  // Unknown route → the same shell (React renders NotFound) with a REAL 404
+  // status + noindex, so crawlers stop treating every typo as a page. A
+  // missing static asset also lands here because express.static above
+  // already declined it — it gets the 404 too instead of an HTML document.
+  const known = isKnownRoute(req.path);
+  res.status(known ? 200 : 404).type('html').send(renderIndex(req.path, { notFound: !known }));
 });
 
-app.listen(PORT, () => {
+module.exports = app;
+
+if (require.main === module) app.listen(PORT, () => {
   console.log(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   The Open CRM — Frontend

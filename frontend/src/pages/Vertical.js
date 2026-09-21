@@ -15,12 +15,16 @@ import React from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { getVertical, VERTICALS } from '../marketing/verticals';
 import { COMPARISONS } from '../marketing/comparisons';
-import { MarketingNav, MarketingFooter, CtaPair, TellItDemo, StageFlow, Section } from '../components/MarketingShell';
+import { usePlatformTemplate } from '../marketing/usePlatformTemplate';
+import { MarketingNav, MarketingFooter, CtaPair, TellItDemo, StageFlow, Section, BuildMyCrmButton } from '../components/MarketingShell';
 
 export default function Vertical({ slug: slugProp }) {
   const params = useParams();
   const slug = slugProp || params.slug;
   const v = getVertical(slug);
+  // The live starter template for this vertical (null until loaded / if the
+  // gallery is unreachable). Hooks run before any early return.
+  const live = usePlatformTemplate(v ? v.id : null);
   if (!v) return <Navigate to="/" replace />;
 
   // Canonical URL uses the hyphenated slug; the raw template id also resolves.
@@ -42,8 +46,15 @@ export default function Vertical({ slug: slugProp }) {
         <p className="text-sm font-semibold text-brand-blue uppercase tracking-wider mb-3">{v.title}</p>
         <h1 className="text-3xl sm:text-5xl font-bold text-gray-900 leading-tight mb-5 max-w-4xl">{v.headline}</h1>
         <p className="text-lg sm:text-xl text-gray-700 leading-relaxed max-w-3xl mb-8">{v.intro}</p>
-        <CtaPair note={`Pick "${v.name}" as your starting template after signup, or type it in your own words. You approve everything before it is created.`} />
+        <CtaPair
+          templateId={live ? live.id : null}
+          note={live
+            ? `Starts from the "${live.name}" template on the first screen after signup (no AI needed to draft it), or type it in your own words. You approve everything before it is created.`
+            : `Pick "${v.name}" as your starting template after signup, or type it in your own words. You approve everything before it is created.`}
+        />
       </Section>
+
+      {live && <LiveTemplateCard tpl={live} />}
 
       <Section className="bg-gray-50 border-y border-gray-200 py-12 sm:py-16">
         <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">The pipeline this template starts from</h2>
@@ -104,7 +115,7 @@ export default function Vertical({ slug: slugProp }) {
           Free to start, no card. Describe how you sell on the first screen, approve the setup, and your team is working in it the same afternoon.
         </p>
         <div className="[&_p]:text-gray-400">
-          <CtaPair />
+          <CtaPair templateId={live ? live.id : null} />
         </div>
       </Section>
 
@@ -131,5 +142,54 @@ export default function Vertical({ slug: slugProp }) {
 
       <MarketingFooter />
     </div>
+  );
+}
+
+// The real, seeded starter template — what the visitor actually gets, straight
+// from the public gallery. Static copy above stays as the SEO/offline baseline.
+function LiveTemplateCard({ tpl }) {
+  const stages = Array.isArray(tpl.stages) ? tpl.stages : [];
+  const fields = Array.isArray(tpl.field_labels) ? tpl.field_labels : [];
+  const uses = Number(tpl.use_count) || 0;
+  const rules = Number(tpl.automation_count) || 0;
+  const views = Number(tpl.view_count) || 0;
+  return (
+    <Section className="pb-12 sm:pb-16">
+      <div className="rounded-2xl border-2 border-brand-blue/30 bg-brand-blue/5 p-6 sm:p-8" data-testid="live-template">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-5">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-brand-blue mb-1">Live starter template</p>
+            <h2 className="text-xl sm:text-2xl font-bold text-gray-900">{tpl.name}</h2>
+            {tpl.tagline && <p className="text-gray-700 mt-1">{tpl.tagline}</p>}
+          </div>
+          <div className="shrink-0">
+            <BuildMyCrmButton templateId={tpl.id}>Start with this template</BuildMyCrmButton>
+          </div>
+        </div>
+        {stages.length > 0 && (
+          <div className="mb-5">
+            <div className="text-sm font-semibold text-gray-900 mb-2">{tpl.pipeline_name ? `${tpl.pipeline_name} pipeline` : 'Pipeline'}</div>
+            <StageFlow stages={stages} />
+          </div>
+        )}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+          <div className="bg-white rounded-xl border border-gray-200 p-4">
+            <div className="font-semibold text-gray-900 mb-1">{fields.length} custom field{fields.length === 1 ? '' : 's'}</div>
+            <div className="text-gray-700">{fields.length ? fields.join(', ') : 'Uses the standard deal fields.'}</div>
+          </div>
+          <div className="bg-white rounded-xl border border-gray-200 p-4">
+            <div className="font-semibold text-gray-900 mb-1">{rules} follow-up rule{rules === 1 ? '' : 's'}</div>
+            <div className="text-gray-700">Each one creates a task or flags a deal on a schedule. Switch off any time.</div>
+          </div>
+          <div className="bg-white rounded-xl border border-gray-200 p-4">
+            <div className="font-semibold text-gray-900 mb-1">{views} saved view{views === 1 ? '' : 's'}</div>
+            <div className="text-gray-700">{uses > 0 ? `Used by ${uses} workspace${uses === 1 ? '' : 's'} so far.` : 'One click from the Deals page.'}</div>
+          </div>
+        </div>
+        <p className="text-xs text-gray-500 mt-4">
+          Applied without an AI call, as a checklist you approve item by item. Every stage, field and rule is editable afterwards.
+        </p>
+      </div>
+    </Section>
   );
 }

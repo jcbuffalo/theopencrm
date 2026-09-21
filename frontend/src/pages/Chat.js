@@ -1082,7 +1082,7 @@ export default function Chat() {
   return (
     <div className="h-screen bg-gray-50 flex flex-col">
       <Nav active="chat" />
-      <main className="flex-1 min-h-0 flex flex-col max-w-3xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-hidden">
+      <main id="main-content" className="flex-1 min-h-0 flex flex-col max-w-3xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-hidden">
         {/* Top-of-page banner: AI not configured on this deployment. */}
         {aiUnavailable && (
           <div className="mb-3 bg-amber-50 border border-amber-300 text-amber-900 rounded-lg px-4 py-3 text-sm">

@@ -868,7 +868,7 @@ export default function Landing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-8">
             <div>
-              <h5 className="text-white font-semibold mb-4">The Open CRM</h5>
+              <h4 className="text-white font-semibold mb-4">The Open CRM</h4>
               <p className="text-sm">A lightweight, configurable CRM. White-labelable per workflow.</p>
             </div>
             {/* Footer link tap targets: each <a> is block + min-h-[32px] +
@@ -877,7 +877,7 @@ export default function Landing() {
                 height) — the mobile audit flagged dozens of footer links as
                 tiny tap targets across every public page. */}
             <div>
-              <h6 className="text-white font-semibold mb-4">Product</h6>
+              <h5 className="text-white font-semibold mb-4">Product</h5>
               <ul className="space-y-1 text-sm">
                 <li><a href="#whats-included" className="block py-1 min-h-[32px] flex items-center hover:text-white">What's Included</a></li>
                 <li><a href="#customizations" className="block py-1 min-h-[32px] flex items-center hover:text-white">Customizations</a></li>
@@ -886,14 +886,14 @@ export default function Landing() {
               </ul>
             </div>
             <div>
-              <h6 className="text-white font-semibold mb-4">Company</h6>
+              <h5 className="text-white font-semibold mb-4">Company</h5>
               <ul className="space-y-1 text-sm">
                 <li><a href="#contact" className="block py-1 min-h-[32px] flex items-center hover:text-white">Contact</a></li>
                 <li><a href="mailto:johnbcoles@gmail.com" className="block py-1 min-h-[32px] flex items-center hover:text-white">Email us</a></li>
               </ul>
             </div>
             <div>
-              <h6 className="text-white font-semibold mb-4">Legal</h6>
+              <h5 className="text-white font-semibold mb-4">Legal</h5>
               <ul className="space-y-1 text-sm">
                 <li><a href="/privacy" className="block py-1 min-h-[32px] flex items-center hover:text-white">Privacy Policy</a></li>
                 <li><a href="/terms" className="block py-1 min-h-[32px] flex items-center hover:text-white">Terms of Service</a></li>

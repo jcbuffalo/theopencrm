@@ -36,6 +36,7 @@ const { ensureSuperAdmin, initialStatusFor, isSeedAdmin, ensureOrgProfile } = re
 const featureFlags = require('../services/featureFlags');
 // Per-org pipeline stages (migration 155) — served on /auth/me as org_pipeline.
 const pipelines = require('../services/pipelines');
+const { orgHasCustomers } = require('../services/orgHasCustomers');
 const { createSelfServeOrg } = require('../services/selfServeOrg');
 
 // ---------------------------------------------------------------------------
@@ -722,41 +723,10 @@ router.get('/me', authMiddleware, async (req, res) => {
         }
       }
     } catch { org_pipeline = null; org_pipelines = null; }
-    // Does this org have any post-sale reality yet — a company past
-    // "prospect" (type customer / lifecycle stage moved on) or a won deal?
-    // The nav hides the empty Customers group until it does (Wave 3 of the
-    // 2026-09-18 review). One cheap EXISTS round-trip; null on any failure
-    // (or no org) so the frontend keeps showing everything — the same
-    // "unknown means on" posture org_features takes.
-    let org_has_customers = null;
-    if (u.org_id) {
-      try {
-        const hc = await pool.query(
-          `SELECT (
-             EXISTS (SELECT 1 FROM companies
-                      WHERE org_id = $1
-                        AND (type = 'customer' OR COALESCE(lifecycle_stage, 'prospect') <> 'prospect'))
-             OR EXISTS (SELECT 1 FROM deals
-                      WHERE org_id = $1
-                        AND (stage IN ('CLOSED_WON', 'closed_won', 'CLOSED', 'CLOSED_PAID') OR closed_date IS NOT NULL))
-             -- Custom pipelines (migrations 155/156): a deal sitting on any
-             -- stage its pipeline marks is_won.
-             OR EXISTS (SELECT 1
-                          FROM deals d
-                          JOIN pipelines p
-                            ON p.org_id = d.org_id
-                           AND (p.deal_type = d.deal_type OR (p.is_default = TRUE AND COALESCE(d.deal_type, 'default') = 'default'))
-                          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.stage_defs, '[]'::jsonb)) st
-                         WHERE d.org_id = $1
-                           AND st->>'id' = d.stage
-                           AND COALESCE((st->>'is_won')::boolean, FALSE))
-           ) AS has_customers`,
-          [u.org_id]
-        );
-        const v = hc && hc.rows && hc.rows[0] ? hc.rows[0].has_customers : null;
-        org_has_customers = typeof v === 'boolean' ? v : null;
-      } catch { org_has_customers = null; }
-    }
+    // Post-sale nav gating (Wave 3): cached per org in services/orgHasCustomers
+    // so the 3-way EXISTS does not run on every /auth/me. null = unknown =
+    // the frontend shows everything.
+    const org_has_customers = await orgHasCustomers(u.org_id);
     res.json({
       success: true,
       user: {

@@ -265,6 +265,9 @@ function isCsrfExempt(req) {
   // so double-submit CSRF does not apply. See middleware/scimAuth.js.
   if (p.startsWith('/scim/')) return true;
   if (p.startsWith('/api/invites/')) return true;
+  // One-click actions from notification emails (spec 204): session-less, the
+  // 256-bit single-use token in the path is the credential.
+  if (p.startsWith('/api/email-actions/')) return true;
   if (p.startsWith('/api/public/lead-forms/')) return true;
   if (p.startsWith('/api/public/surveys/')) return true;
   // Customer portal public reads (no session; the 192-bit portal token in the
@@ -338,6 +341,13 @@ app.use(requestContext);
 
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
+// Readiness (vs. the liveness above): 503 until migrations + seeds finished.
+// With migrate-before-listen (see prepareThenListen) this is only ever 503
+// for a test import; it exists so an HTTP startup probe can be pointed here.
+app.get('/health/ready', (req, res) => {
+  res.status(bootPhase === 'ready' ? 200 : 503).json({ status: bootPhase, timestamp: new Date().toISOString() });
 });
 
 // Deep health check — actually tests dependencies. Returns 503 if anything's
@@ -548,6 +558,23 @@ app.use('/api/auth/sso', require('./routes/ssoLoginRoutes'));
 console.log('✅ Mounted: GET /api/auth/sso/:slug/start · /callback · /resolve (OIDC login)');
 
 // CRM Routes
+// /auth/me caches `org_has_customers` (services/orgHasCustomers.js) for up to
+// 60s/10min. Any successful write on the surfaces that can flip the answer
+// (deal stage/close, company type/lifecycle, chat apply, winback, CSV import)
+// drops the org's cache entry so the nav catches up on the next /auth/me
+// rather than after the TTL. `finish` fires after the router's own auth ran,
+// so req.orgId is populated by then.
+{
+  const { invalidate: invalidateHasCustomers } = require('./services/orgHasCustomers');
+  app.use(['/api/deals', '/api/companies', '/api/ai/actions', '/api/winback', '/api/import'], (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS') {
+      res.on('finish', () => {
+        if (res.statusCode < 300 && req.orgId) invalidateHasCustomers(req.orgId);
+      });
+    }
+    next();
+  });
+}
 app.use('/api/companies', companyRoutes);
 console.log('✅ Mounted: /api/companies (CRUD)');
 
@@ -902,6 +929,13 @@ const workspaceTemplateRoutes = require('./routes/workspaceTemplateRoutes');
 const { publicFormLimiter: templateGalleryLimiter } = require('./middleware/rateLimits');
 app.use('/api/workspace-templates', workspaceTemplateRoutes);
 app.use('/api/public/workspace-templates', templateGalleryLimiter, workspaceTemplateRoutes.publicRouter);
+
+// One-click actions from notification emails (spec 204, migration 173) —
+// GET /:token describes, POST /:token/apply performs. Session-less (token
+// is the credential, CSRF-exempt above), per-IP rate-limited like the other
+// public token surfaces.
+app.use('/api/email-actions', templateGalleryLimiter, require('./routes/emailActionRoutes'));
+console.log('✅ Mounted: /api/email-actions (one-click actions from notification emails)');
 console.log('✅ Mounted: /api/workspace-templates + /api/public/workspace-templates (saved workspace templates)');
 
 // Drive Intel (Differentiation Bet #4, DRIVE_INTEL_SPEC.md). Three mount points:
@@ -1234,28 +1268,44 @@ async function runMigrationsOnStartup() {
 // SERVER STARTUP
 // ============================================================================
 
-app.listen(PORT, async () => {
-  console.log(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Lightweight CRM Backend
-  Environment: ${process.env.NODE_ENV || 'development'}
-  Server running on port: ${PORT}
-  CORS Origin: ${process.env.FRONTEND_URL || 'http://localhost:3000'}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  `);
+// Readiness gate. Cloud Run's startup probe is a TCP check on the port, so the
+// instant `listen` opens it, traffic arrives. Migrations used to run INSIDE
+// the listen callback — the first request after a deploy that added a table
+// could hit `relation "…" does not exist` (observed once on 2026-09-19 with
+// workspace_templates). Now: migrate → seed → THEN listen. Until then the
+// port is closed and the probe (240s budget, same as before) simply waits;
+// a migration failure still exits non-zero inside runMigrationsOnStartup so
+// the prior healthy revision stays live. /health reports the phase.
+let bootPhase = 'starting';
 
-  // Run migrations on startup
+async function prepareThenListen() {
   if (process.env.NODE_ENV === 'production') {
-    console.log('\n🗄️  Running database migrations...\n');
+    bootPhase = 'migrating';
+    console.log('\n🗄️  Running database migrations (before accepting traffic)...\n');
     await runMigrationsOnStartup();
     // Starter workspace-template gallery (spec 203 Phase 2) — reviewed configs
     // from backend/data/, upserted by slug. Never blocks boot.
+    bootPhase = 'seeding';
     try {
       await require('./services/workspaceTemplates').seedPlatformTemplates();
     } catch (err) {
       console.error('workspace-templates seed failed:', err.message);
     }
   }
+  bootPhase = 'ready';
+  app.listen(PORT, onListening);
+}
+
+async function onListening() {
+  console.log(`
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Lightweight CRM Backend
+  Environment: ${process.env.NODE_ENV || 'development'}
+  Server running on port: ${PORT}
+  CORS Origin: ${process.env.FRONTEND_URL || 'http://localhost:3000'}
+  Schema: ${process.env.NODE_ENV === 'production' ? 'migrated before listen' : 'migrations skipped (not production)'}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  `);
 
   // Customer-Success e2e test-account seeder — only when CS_E2E_SEED=true.
   // Provisions one password-capable, email-verified account in a zang +
@@ -1309,6 +1359,20 @@ app.listen(PORT, async () => {
       overdueWorker.startScheduler({ intervalMinutes: minutes, maxPerRun: maxRun });
     } catch (err) {
       console.error('Failed to start overdue-task worker:', err.message);
+    }
+  }
+
+  // Consolidated notification email (spec 204): flushes 'batched' users'
+  // queued alerts every 15 min and sends 'daily' users one digest at their
+  // local hour with the live My Day queue + one-click buttons. Per-user
+  // claims (queue digest_id / users.digest_last_sent_at) make it pod-safe.
+  if (automationEnabled) {
+    try {
+      const digestWorker = require('./services/notificationDigestWorker');
+      const minutes = Number(process.env.DIGEST_WORKER_INTERVAL_MINUTES) || 5;
+      digestWorker.startScheduler({ intervalMinutes: minutes });
+    } catch (err) {
+      console.error('Failed to start notification digest worker:', err.message);
     }
   }
 
@@ -1484,7 +1548,15 @@ app.listen(PORT, async () => {
       console.error('Failed to start plugin schedule worker:', err.message);
     }
   }
-});
+}
+
+// Tests import `app` without booting; only a direct `node index.js` listens.
+if (require.main === module) {
+  prepareThenListen().catch((err) => {
+    console.error('Boot failed before listen:', err);
+    process.exit(1);
+  });
+}
 
 // Handle graceful shutdown
 process.on('SIGTERM', () => {

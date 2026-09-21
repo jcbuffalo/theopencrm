@@ -205,12 +205,12 @@ describe('navConfig helpers', () => {
   it('resolveActive maps every page key the app passes to a group', () => {
     const model = buildNavModel({ cfg, orgFeatures: null, isAdmin: true });
     const expectations = {
-      chat: 'chat', today: 'today', deals: 'pipeline', leads: 'pipeline', tasks: 'pipeline', 'quote-builder': 'pipeline',
+      chat: 'chat', today: 'today', deals: 'pipeline', leads: 'pipeline', tasks: 'pipeline', activities: 'pipeline', 'quote-builder': 'pipeline',
       forecast: 'pipeline', products: 'pipeline', sequences: 'pipeline',
       contacts: 'people', companies: 'people', accounts: 'people', import: 'people',
       renewals: 'customers', 'service-contracts': 'customers', cases: 'customers', playbooks: 'customers', surveys: 'customers', segments: 'customers',
       dashboard: 'reports', reports: 'reports', 'lifecycle-funnel': 'reports', retention: 'reports', winback: 'reports',
-      settings: 'account', team: 'account', usage: 'account', plugins: 'account', calendar: 'account', activities: 'account',
+      settings: 'account', team: 'account', usage: 'account', plugins: 'account', calendar: 'account',
       notifications: 'account', admin: 'account', 'email-templates': 'account',
     };
     for (const [key, group] of Object.entries(expectations)) {

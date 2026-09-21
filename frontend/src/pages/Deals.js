@@ -647,7 +647,7 @@ export default function Deals() {
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <Nav active="deals" />
 
-      <main className="flex-1 flex flex-col px-3 sm:px-4 lg:px-6 py-3 lg:py-4 overflow-hidden">
+      <main id="main-content" className="flex-1 flex flex-col px-3 sm:px-4 lg:px-6 py-3 lg:py-4 overflow-hidden">
         <PageHeader
           className="mb-3"
           actionSize="sm"

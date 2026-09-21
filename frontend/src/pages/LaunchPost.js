@@ -25,7 +25,7 @@ export default function LaunchPost() {
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-14">
+      <main id="main-content" className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-14">
         <p className="text-sm font-semibold text-brand-blue uppercase tracking-wider mb-3">September 18, 2026</p>
         <h1 className="text-4xl sm:text-5xl font-bold text-gray-900 mb-6 leading-tight">
           The Open CRM is now actually open.

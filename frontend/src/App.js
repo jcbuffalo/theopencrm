@@ -86,6 +86,7 @@ const LaunchPost = lazyWithRetry(() => import('./pages/LaunchPost')); // public 
 const Compare = lazyWithRetry(() => import('./pages/Compare'));
 const Vertical = lazyWithRetry(() => import('./pages/Vertical'));
 const VerifyEmail = lazyWithRetry(() => import('./pages/VerifyEmail'));
+const EmailAction = lazyWithRetry(() => import('./pages/EmailAction'));
 const PitchReadiness = lazyWithRetry(() => import('./pages/PitchReadiness'));
 const Appreciation = lazyWithRetry(() => import('./pages/Appreciation'));
 const AdminFeatureFlags = lazyWithRetry(() => import('./pages/AdminFeatureFlags'));
@@ -209,6 +210,9 @@ function App() {
           {/* Landing target of the emailed verification link
               (services/emailVerification.js) — must work with no session. */}
           <Route path="/verify-email" element={<VerifyEmail />} />
+          {/* Landing for the one-click buttons in notification / digest emails
+              (spec 204). Session-less: the single-use token is the credential. */}
+          <Route path="/act/:token" element={<EmailAction />} />
           {/* Generic legal-doc renderer — serves any /legal/:doc against /api/legal/:doc */}
           <Route path="/legal/:doc" element={<LegalDoc />} />
           <Route path="/sso/handoff" element={<SsoHandoff />} />

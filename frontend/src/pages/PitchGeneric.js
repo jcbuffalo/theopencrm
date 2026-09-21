@@ -21,7 +21,7 @@ export default function PitchGeneric() {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-12">
+      <main id="main-content" className="max-w-5xl mx-auto px-6 py-12">
         <div className="text-center mb-12">
           <p className="text-sm font-semibold text-brand-mint-dark uppercase tracking-wide">The Open CRM</p>
           <h1 className="text-4xl font-bold text-gray-900 mt-2 mb-3">A configurable CRM that gets out of your way.</h1>

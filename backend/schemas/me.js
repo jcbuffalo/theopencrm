@@ -94,8 +94,18 @@ const channelMatrix = z.object({
   sms:   z.boolean().optional(),
 }).strict();
 
+// Consolidated email delivery (spec 204, migration 173). Lives beside the
+// categories in the same JSONB so a partial PUT merges like any category:
+//   { email_delivery: { mode: 'daily', hour: 7, tz: 'America/New_York' } }
+const emailDelivery = z.object({
+  mode: z.enum(['instant', 'batched', 'daily']).optional(),
+  hour: z.number().int().min(0).max(23).optional(),
+  tz:   z.string().min(1).max(64).regex(/^[A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)*$/, 'IANA timezone').optional(),
+}).strict();
+
 const updateNotificationPreferencesSchema = z
   .object({
+    email_delivery:  emailDelivery.optional(),
     task_assigned:   channelMatrix.optional(),
     task_overdue:    channelMatrix.optional(),
     deal_activity:   channelMatrix.optional(),

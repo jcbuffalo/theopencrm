@@ -160,6 +160,15 @@ export default function Nav({ active }) {
 
   return (
     <header className="bg-white border-b border-gray-200 flex-shrink-0 relative z-40">
+      {/* Keyboard / screen-reader users: jump past the nav to the page's
+          <main id="main-content"> (ui/Container sets it; pages with their
+          own <main> carry the same id). Visible only while focused. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-2 focus:z-50 focus:px-3 focus:py-2 focus:rounded-md focus:bg-brand-blue focus:text-white focus:text-sm focus:font-medium"
+      >
+        Skip to content
+      </a>
       <div className="px-3 sm:px-5 h-14 flex items-center gap-1">
         {/* Logo → `/`, which is the Chat front door for authenticated users. */}
         <Link to="/" className="flex items-center gap-2 flex-shrink-0 h-9 pr-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-brand-blue/40">

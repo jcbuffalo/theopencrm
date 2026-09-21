@@ -19,8 +19,11 @@ import React from 'react';
 const SIZES = { default: 'max-w-6xl', wide: 'max-w-7xl', narrow: 'max-w-3xl', full: 'max-w-none' };
 
 export default function Container({ size = 'default', as: Tag = 'main', className = '', children, ...rest }) {
+  // The <main> landmark is also the skip-link target (Nav's "Skip to
+  // content" points at #main-content); tabIndex -1 lets it take focus.
+  const landmark = Tag === 'main' ? { id: 'main-content', tabIndex: -1 } : {};
   return (
-    <Tag className={`mx-auto w-full px-4 py-6 sm:px-6 ${SIZES[size] || SIZES.default} ${className}`} {...rest}>
+    <Tag className={`mx-auto w-full px-4 py-6 sm:px-6 ${SIZES[size] || SIZES.default} ${className}`} {...landmark} {...rest}>
       {children}
     </Tag>
   );

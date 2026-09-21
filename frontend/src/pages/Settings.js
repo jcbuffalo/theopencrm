@@ -641,6 +641,133 @@ function Toggle({ checked, onChange, disabled, ariaLabel }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Email delivery (spec 204): instant / grouped every 15 min / one digest a
+// day at an hour of your choosing. Wire shape lives under the same JSONB as
+// the categories: { email_delivery: { mode, hour, tz } }. The browser's IANA
+// timezone rides along with every save so "07:00" means the user's 07:00.
+// ---------------------------------------------------------------------------
+
+const DELIVERY_MODES = [
+  { key: 'daily',   label: 'One email a day',        blurb: 'Everything that needs you — tasks due, next steps, quiet accounts, plus anything that happened — in one morning email with buttons that do the work.' },
+  { key: 'batched', label: 'Grouped every 15 minutes', blurb: 'Alerts are held briefly and sent together, so a burst becomes one email.' },
+  { key: 'instant', label: 'As it happens',          blurb: 'One email per alert, right away. Each still carries its one-click buttons.' },
+];
+
+function browserTimezone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
+}
+
+function fmtHour(h) {
+  const d = new Date(2000, 0, 1, h, 0, 0);
+  return d.toLocaleTimeString([], { hour: 'numeric' });
+}
+
+function EmailDeliveryCard({ user, refreshUser }) {
+  const stored = (user?.notification_preferences && user.notification_preferences.email_delivery) || {};
+  const [mode, setMode] = useState(DELIVERY_MODES.some((m) => m.key === stored.mode) ? stored.mode : 'daily');
+  const [hour, setHour] = useState(Number.isInteger(stored.hour) ? stored.hour : 7);
+  const [saving, setSaving] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [note, setNote] = useState('');
+  const [error, setError] = useState('');
+  const tz = stored.tz || browserTimezone();
+
+  useEffect(() => {
+    const cur = (user?.notification_preferences && user.notification_preferences.email_delivery) || {};
+    if (DELIVERY_MODES.some((m) => m.key === cur.mode)) setMode(cur.mode);
+    if (Number.isInteger(cur.hour)) setHour(cur.hour);
+  }, [user]);
+
+  const save = async (patch) => {
+    setSaving(true);
+    setError('');
+    setNote('');
+    try {
+      const body = { email_delivery: { ...patch } };
+      const btz = browserTimezone();
+      if (btz) body.email_delivery.tz = btz;
+      await api.put('/me/notification-preferences', body);
+      await refreshUser();
+      setNote('Saved.');
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const sendNow = async () => {
+    setSending(true);
+    setError('');
+    setNote('');
+    try {
+      const r = await api.post('/me/notification-digest/send-now');
+      const d = r.data || {};
+      if (d.sent) setNote(`Sent "${d.subject}" to ${user?.notification_email || user?.email}. Check your inbox.`);
+      else if (d.reason === 'empty') setNote('Nothing to send right now — no tasks due, next steps, quiet accounts, or new alerts. Nice.');
+      else if (d.reason === 'no_address') setError('No email address on file.');
+      else setNote('Nothing was sent.');
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to send');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <Card
+      title="Email delivery"
+      subtitle="How the alerts below reach your inbox. Every email carries one-click buttons (mark done, snooze, log a touch) that work without signing in."
+    >
+      <fieldset className="space-y-2" disabled={saving}>
+        <legend className="sr-only">Email delivery mode</legend>
+        {DELIVERY_MODES.map((m) => (
+          <div key={m.key} className={`p-3 rounded-lg border ${mode === m.key ? 'border-brand-blue bg-brand-blue/5' : 'border-gray-200 hover:border-gray-300'}`}>
+            <label className="flex gap-3 items-start cursor-pointer">
+              <input
+                type="radio"
+                name="email_delivery_mode"
+                value={m.key}
+                checked={mode === m.key}
+                onChange={() => { setMode(m.key); save({ mode: m.key, hour }); }}
+                className="mt-1"
+              />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-gray-900">{m.label}</span>
+                <span className="block text-xs text-gray-500 mt-0.5">{m.blurb}</span>
+              </span>
+            </label>
+            {m.key === 'daily' && mode === 'daily' && (
+              <div className="mt-2 ml-7 flex flex-wrap items-center gap-2 text-sm text-gray-700">
+                <label htmlFor="digest-hour" className="text-xs text-gray-600">Send at</label>
+                <select
+                  id="digest-hour"
+                  value={hour}
+                  onChange={(e) => { const h = Number(e.target.value); setHour(h); save({ mode: 'daily', hour: h }); }}
+                  className="border border-gray-300 rounded px-2 py-1 text-sm bg-white"
+                >
+                  {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{fmtHour(h)}</option>)}
+                </select>
+                {tz && <span className="text-xs text-gray-500">{tz}</span>}
+              </div>
+            )}
+          </div>
+        ))}
+      </fieldset>
+
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Button variant="secondary" size="sm" onClick={sendNow} disabled={sending || saving}>
+          {sending ? 'Sending…' : "Send me today's digest now"}
+        </Button>
+        <span className="text-xs text-gray-500">Same email the daily schedule sends. Handy to see what it looks like.</span>
+      </div>
+      {note && <p className="text-sm text-green-700 mt-3" role="status">{note}</p>}
+      {error && <Alert tone="danger" className="mt-3" onDismiss={() => setError('')}>{error}</Alert>}
+    </Card>
+  );
+}
+
 function NotificationsTab() {
   const { user, refreshUser } = useAuth();
 
@@ -693,6 +820,7 @@ function NotificationsTab() {
 
   return (
     <div className="space-y-6">
+      <EmailDeliveryCard user={user} refreshUser={refreshUser} />
       <Card
         title="Notification channels"
         subtitle="Choose how we reach you for each category. We only send transactional notifications — no marketing."

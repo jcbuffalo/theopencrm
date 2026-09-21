@@ -64,7 +64,7 @@ export default function Compare({ slug }) {
           <table className="min-w-[640px] w-full text-sm border-collapse">
             <thead>
               <tr className="text-left">
-                <th className="py-3 px-4 font-semibold text-gray-600 border-b border-gray-200 w-1/4"> </th>
+                <th scope="col" className="py-3 px-4 font-semibold text-gray-600 border-b border-gray-200 w-1/4"><span className="sr-only">Feature</span></th>
                 <th className="py-3 px-4 font-semibold text-gray-900 border-b border-gray-200">{c.competitor.name}</th>
                 <th className="py-3 px-4 font-semibold text-brand-blue border-b border-gray-200">The Open CRM</th>
               </tr>

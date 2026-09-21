@@ -22,7 +22,7 @@ RUN npm install --omit=dev express compression
 
 # Copy built React app from builder
 COPY --from=builder /app/build ./build
-COPY server.js .
+COPY server.js routeManifest.cjs ./
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001

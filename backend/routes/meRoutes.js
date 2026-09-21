@@ -294,6 +294,39 @@ router.put('/notification-preferences', validateBody(updateNotificationPreferenc
   }
 });
 
+/**
+ * POST /api/me/notification-digest/send-now
+ *
+ * Send the caller their consolidated digest immediately — the same email
+ * the daily schedule would send (queued events + live My Day queue with
+ * one-click buttons). Exists so a user can see what they'll get without
+ * waiting for 07:00, and so the owner can dogfood the format. Does not
+ * touch the daily schedule (digest_last_sent_at). Rate-limited by the
+ * per-user cap below: once a minute is plenty.
+ *
+ * Returns { success, sent, items, subject?, reason? } — reason 'empty' when
+ * there is nothing to send, 'no_address' / 'email_off' otherwise.
+ */
+const digestSendNowAt = new Map(); // userId → last send ms (per pod; fine)
+router.post('/notification-digest/send-now', async (req, res) => {
+  try {
+    const last = digestSendNowAt.get(req.userId) || 0;
+    if (Date.now() - last < 60 * 1000) {
+      return res.status(429).json({ success: false, error: 'Give it a minute before sending another preview.' });
+    }
+    const digest = require('../services/notificationDigest');
+    const user = await digest.loadUser(req.userId);
+    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+    const out = await digest.flushUser(user, { kind: 'daily', force: true });
+    if (out.sent) digestSendNowAt.set(req.userId, Date.now());
+    audit.fromReq(req, { event: audit.EVENTS.NOTIFICATION_PREFERENCES_UPDATED, meta: { op: 'digest_send_now', sent: !!out.sent, items: out.items || 0 } });
+    res.json({ success: true, ...out });
+  } catch (err) {
+    if (req.log) req.log.error('me_digest_send_now_failed', { error: err });
+    res.status(500).json({ success: false, error: 'Failed to send the digest', requestId: req.requestId });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // GDPR export table registry (export_version 2, 2026-09-14 audit).
 //

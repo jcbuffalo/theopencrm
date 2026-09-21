@@ -113,7 +113,7 @@ export default function Renewals() {
                   >
                     <div className="px-4 py-3 border-b border-gray-100">
                       <div className="flex items-center justify-between">
-                        <h3 className={`text-sm font-semibold ${isAtRisk ? 'text-danger-700' : 'text-gray-900'}`}>{stage.label}</h3>
+                        <h2 className={`text-sm font-semibold ${isAtRisk ? 'text-danger-700' : 'text-gray-900'}`}>{stage.label}</h2>
                         <StatusBadge tone={isAtRisk && stats.count > 0 ? 'error' : 'neutral'} label={stats.count} />
                       </div>
                       <div className="text-xs text-gray-500 mt-1">{fmtMoney(stats.annual_value)} / yr</div>

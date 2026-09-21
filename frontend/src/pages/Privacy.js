@@ -31,7 +31,7 @@ export default function Privacy() {
           body gets inline-block + py-1 + align-middle so the touch area
           clears the audit's 32px floor without breaking text flow. Was the
           main source of remaining mobile tap-target findings on legal pages. */}
-      <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12 prose prose-gray [&_a]:inline-block [&_a]:py-1 [&_a]:align-middle [&_a]:text-brand-blue-darker">
+      <main id="main-content" className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12 prose prose-gray [&_a]:inline-block [&_a]:py-1 [&_a]:align-middle [&_a]:text-brand-blue-darker">
         <h1 className="text-3xl font-bold text-gray-900">Privacy Policy</h1>
         <p className="text-sm text-gray-500">Effective date: {EFFECTIVE_DATE} · Last updated: {LAST_UPDATED}</p>
 

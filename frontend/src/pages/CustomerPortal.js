@@ -130,7 +130,7 @@ export default function CustomerPortal() {
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+      <main id="main-content" className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-8">
         {/* Account overview */}
         <section className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
           <h2 className="text-sm font-semibold text-gray-900 mb-4">Account overview</h2>

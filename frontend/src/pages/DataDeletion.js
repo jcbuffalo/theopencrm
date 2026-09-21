@@ -51,7 +51,7 @@ export default function DataDeletion() {
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-12 [&_a]:inline-block [&_a]:py-1 [&_a]:align-middle [&_a]:text-brand-blue-darker">
+      <main id="main-content" className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-12 [&_a]:inline-block [&_a]:py-1 [&_a]:align-middle [&_a]:text-brand-blue-darker">
         <h1 className="text-3xl font-bold text-gray-900 mb-2">Delete your account and data</h1>
         <p className="text-gray-600 mb-8">You can request permanent deletion of your account and the personal data we hold about you at any time.</p>
 

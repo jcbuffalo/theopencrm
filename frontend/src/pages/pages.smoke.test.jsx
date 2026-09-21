@@ -121,12 +121,14 @@ describe('design-system smoke', () => {
   });
 
   it('marketing primary CTA stores the /setup intent and goes to signup', async () => {
-    const { rememberSetupIntent, SETUP_INTENT_KEY } = await import('../marketing/cta');
+    const { rememberSetupIntent, consumeSetupIntent, SETUP_INTENT_KEY } = await import('../marketing/cta');
     sessionStorage.clear();
     localStorage.clear();
     rememberSetupIntent();
     expect(sessionStorage.getItem('ocrm_post_login_redirect')).toBe('/setup');
-    expect(localStorage.getItem(SETUP_INTENT_KEY)).toBe('1');
+    expect(localStorage.getItem(SETUP_INTENT_KEY)).toBe('/setup');
+    expect(consumeSetupIntent()).toBe('/setup');
+    expect(localStorage.getItem(SETUP_INTENT_KEY)).toBeNull();
     render(
       <MemoryRouter>
         <Compare slug="hubspot" />
@@ -134,5 +136,73 @@ describe('design-system smoke', () => {
     );
     const ctas = screen.getAllByRole('button', { name: /build my crm/i });
     expect(ctas.length).toBeGreaterThan(0);
+  });
+
+  it('a template-carrying CTA intent round-trips, legacy "1" still means /setup, junk is ignored', async () => {
+    const { rememberSetupIntent, consumeSetupIntent, SETUP_INTENT_KEY } = await import('../marketing/cta');
+    sessionStorage.clear();
+    localStorage.clear();
+    rememberSetupIntent({ templateId: 42 });
+    expect(sessionStorage.getItem('ocrm_post_login_redirect')).toBe('/setup?template=wt:42');
+    expect(consumeSetupIntent()).toBe('/setup?template=wt:42');
+    localStorage.setItem(SETUP_INTENT_KEY, '1');
+    expect(consumeSetupIntent()).toBe('/setup');
+    localStorage.setItem(SETUP_INTENT_KEY, 'https://evil.example/phish');
+    expect(consumeSetupIntent()).toBeNull();
+    localStorage.setItem(SETUP_INTENT_KEY, '/setup?template=wt:1;x');
+    expect(consumeSetupIntent()).toBeNull();
+    expect(localStorage.getItem(SETUP_INTENT_KEY)).toBeNull();
+  });
+
+  it('a vertical page shows the live starter template from the public gallery and its CTA carries the id', async () => {
+    const { _resetPublicTemplatesCache } = await import('../marketing/usePlatformTemplate');
+    _resetPublicTemplatesCache();
+    sessionStorage.clear();
+    localStorage.clear();
+    api.get.mockImplementation((url) => {
+      if (url === '/public/workspace-templates') {
+        return Promise.resolve({ data: { templates: [
+          { id: 7, slug: 'construction', name: 'Construction contractor', tagline: 'Bids to awards.', is_platform: true,
+            stages: ['Bid invite', 'Site visit', 'Submitted', 'Awarded'], pipeline_name: 'Bids',
+            field_labels: ['Bid due', 'GC'], automation_count: 1, view_count: 2, use_count: 3 },
+          { id: 8, slug: 'saas', name: 'SaaS', is_platform: true, stages: [] },
+        ] } });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    render(
+      <MemoryRouter>
+        <Vertical slug="construction" />
+      </MemoryRouter>
+    );
+    const card = await screen.findByTestId('live-template');
+    expect(card.textContent).toMatch(/Construction contractor/);
+    expect(card.textContent).toMatch(/Bids pipeline/);
+    expect(card.textContent).toMatch(/Bid invite/);
+    expect(card.textContent).toMatch(/2 custom fields/);
+    expect(card.textContent).toMatch(/1 follow-up ruleEach/);
+    expect(card.textContent).toMatch(/Used by 3 workspaces/);
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /start with this template/i }));
+    expect(sessionStorage.getItem('ocrm_post_login_redirect')).toBe('/setup?template=wt:7');
+    expect(document.body.textContent).not.toMatch(EMOJI);
+    api.get.mockImplementation(() => Promise.resolve({ data: [] }));
+    _resetPublicTemplatesCache();
+  });
+
+  it('a vertical page without a live template renders the static copy only', async () => {
+    const { _resetPublicTemplatesCache } = await import('../marketing/usePlatformTemplate');
+    _resetPublicTemplatesCache();
+    api.get.mockImplementation(() => Promise.reject(new Error('offline')));
+    render(
+      <MemoryRouter>
+        <Vertical slug="construction" />
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/public/workspace-templates'));
+    expect(screen.queryByTestId('live-template')).toBeNull();
+    expect(screen.getAllByRole('button', { name: /build my crm/i }).length).toBeGreaterThan(0);
+    api.get.mockImplementation(() => Promise.resolve({ data: [] }));
+    _resetPublicTemplatesCache();
   });
 });

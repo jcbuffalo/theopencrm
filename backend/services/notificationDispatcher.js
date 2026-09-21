@@ -42,6 +42,13 @@ const email  = require('./email');
 const sms    = require('./sms');
 const logger = require('./logger');
 const inApp  = require('./notifications');
+// Consolidated delivery (spec 204): unless the user chose 'instant', the
+// email channel lands in notification_email_queue and the digest worker
+// sends ONE email (batched every 15 min, or daily at the user's hour with
+// the live My Day queue). Instant sends get the same one-click buttons.
+const digest = require('./notificationDigest');
+
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://app.theopencrm.com';
 
 // Source-of-truth list of categories the dispatcher understands. Keep in
 // sync with migrations 066/144, schemas/me.js, and the frontend's
@@ -76,7 +83,7 @@ const KNOWN_CATEGORIES = [
 
 async function loadUserForDispatch(userId) {
   const r = await pool.query(
-    `SELECT id, email, name, notification_email, notification_phone, notification_preferences
+    `SELECT id, email, name, org_id, notification_email, notification_phone, notification_preferences
        FROM users
       WHERE id = $1`,
     [userId]
@@ -110,8 +117,10 @@ function isCategoryChannelEnabled(prefs, category, channel) {
  *
  * @param {number|string} userId
  * @param {string} category — one of KNOWN_CATEGORIES
- * @param {object} payload  — { subject, html?, text?, sms? }
- * @returns {Promise<{email:'sent'|'skipped'|'failed', sms:'sent'|'skipped'|'failed'}>}
+ * @param {object} payload  — { subject, html?, text?, sms?, link?, entityType?, entityId?, actions? }
+ *   actions: [{ action: 'task.complete', entity_id: 12, label?, params? }] — one-click
+ *   buttons (services/emailActions.js) rendered into the email (instant) or the digest.
+ * @returns {Promise<{email:'sent'|'queued'|'skipped'|'failed', sms:'sent'|'skipped'|'failed'}>}
  */
 async function dispatch(userId, category, payload) {
   if (!KNOWN_CATEGORIES.includes(category)) {
@@ -136,13 +145,42 @@ async function dispatch(userId, category, payload) {
     const toEmail = pickEffectiveEmail(user);
     if (!toEmail) {
       result.email = 'skipped';
+    } else if (digest.deliveryPref(prefs).mode !== 'instant') {
+      // Consolidated delivery: park it; the digest worker sends one email.
+      try {
+        await digest.enqueue({
+          orgId: user.org_id || null,
+          userId: user.id,
+          category,
+          subject: payload.subject || `[The Open CRM] ${category}`,
+          text: payload.text || null,
+          html: payload.html || null,
+          link: payload.link || null,
+          entityType: payload.entityType || null,
+          entityId: payload.entityId || null,
+          actions: payload.actions || [],
+        });
+        result.email = 'queued';
+      } catch (err) {
+        logger.warn?.('notify_dispatch_enqueue_failed', { userId, category, error: err.message });
+        result.email = 'failed';
+      }
     } else {
       try {
+        let html = payload.html || null;
+        let text = payload.text || payload.subject || category;
+        try {
+          const extra = await digest.renderInstantActions(user, { actions: payload.actions || [], link: payload.link || null });
+          if (extra.html) html = `${html || `<p>${payload.subject || ''}</p>`}${extra.html}`;
+          if (extra.text) text = `${text}${extra.text}`;
+        } catch (err) {
+          logger.warn?.('notify_dispatch_actions_failed', { userId, category, error: err.message });
+        }
         await email.sendMail({
           to: toEmail,
           subject: payload.subject || `[The Open CRM] ${category}`,
-          html: payload.html || null,
-          text: payload.text || payload.subject || category,
+          html,
+          text,
         });
         result.email = 'sent';
       } catch (err) {
@@ -245,7 +283,14 @@ async function notifyTaskAssigned(taskId) {
     if (categoryFullyDisabled(task.notification_preferences, 'task_assigned')) {
       console.info(`[notify] notifyTaskAssigned: user ${task.recipient_id} has task_assigned fully disabled`);
     } else {
-      outcome = await dispatch(task.recipient_id, 'task_assigned', { subject, text, html, sms: smsText });
+      outcome = await dispatch(task.recipient_id, 'task_assigned', {
+        subject, text, html, sms: smsText,
+        link: `/tasks?taskId=${task.id}`, entityType: 'task', entityId: task.id,
+        actions: [
+          { action: 'task.complete', entity_id: task.id, label: 'Mark done' },
+          { action: 'task.snooze', entity_id: task.id, label: 'Snooze a day', params: { days: 1 } },
+        ],
+      });
     }
 
     await persistInApp({
@@ -292,7 +337,14 @@ async function notifyTaskOverdue(taskId) {
     if (categoryFullyDisabled(task.notification_preferences, 'task_overdue')) {
       console.info(`[notify] notifyTaskOverdue: user ${task.recipient_id} has task_overdue fully disabled`);
     } else {
-      outcome = await dispatch(task.recipient_id, 'task_overdue', { subject, text, html, sms: smsText });
+      outcome = await dispatch(task.recipient_id, 'task_overdue', {
+        subject, text, html, sms: smsText,
+        link: `/tasks?taskId=${task.id}`, entityType: 'task', entityId: task.id,
+        actions: [
+          { action: 'task.complete', entity_id: task.id, label: 'Mark done' },
+          { action: 'task.snooze', entity_id: task.id, label: 'Snooze a day', params: { days: 1 } },
+        ],
+      });
     }
 
     await persistInApp({
@@ -354,7 +406,7 @@ async function notifyDealActivity(dealId, activityId) {
     if (categoryFullyDisabled(row.notification_preferences, 'deal_activity')) {
       console.info(`[notify] notifyDealActivity: user ${row.recipient_id} has deal_activity fully disabled`);
     } else {
-      outcome = await dispatch(row.recipient_id, 'deal_activity', { subject, text, html, sms: smsText });
+      outcome = await dispatch(row.recipient_id, 'deal_activity', { subject, text, html, sms: smsText, link: `/deals?dealId=${row.deal_id}`, entityType: 'deal', entityId: row.deal_id });
     }
 
     await persistInApp({
@@ -453,7 +505,7 @@ async function fanOut({ recipientId, prefs, orgId, category, subject, text, html
   if (categoryFullyDisabled(prefs, category)) {
     console.info(`[notify] ${category}: user ${recipientId} has ${category} fully disabled on wire channels`);
   } else {
-    outcome = await dispatch(recipientId, category, { subject, text, html, sms });
+    outcome = await dispatch(recipientId, category, { subject, text, html, sms, link, entityType, entityId });
   }
   await persistInApp({
     orgId: orgId || null,

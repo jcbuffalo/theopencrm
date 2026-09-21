@@ -59,7 +59,8 @@ function consumePendingRedirect() {
     /* sessionStorage unavailable */
   }
   // Marketing "Build my CRM" CTA (marketing/cta.js) — localStorage-carried so
-  // it survives the verify-email link opening in a new tab. Only ever /setup.
+  // it survives the verify-email link opening in a new tab. Only ever /setup
+  // (optionally with ?template=wt:<id> from a /crm-for page).
   const setupIntent = consumeSetupIntent();
   if (setupIntent) return setupIntent;
   return '/';

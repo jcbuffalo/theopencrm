@@ -47,6 +47,9 @@ export function buildNavModel({ cfg, orgFeatures, isAdmin, hasCustomers = null }
     item('deals', 'Deals', '/deals', { keywords: 'pipeline kanban opportunities' }),
     on('leads_enabled') && item('leads', 'Leads', '/leads', { keywords: 'lead forms capture' }),
     item('tasks', 'Tasks', '/tasks', { keywords: 'todo follow-ups reminders' }),
+    // Activities is a daily selling surface (log a call, see what happened),
+    // not a "me and my workspace" setting — it sits next to Deals/Tasks.
+    item('activities', 'Activities', '/activities', { keywords: 'log calls emails notes timeline' }),
     advanced
       ? on('quotes_enabled') && item('quotes', 'Quotes', '/quotes', { keywords: 'customer quotes rfq' })
       : on('products_enabled') && item('quote-builder', 'Quotes', '/quote-builder', { keywords: 'sales quote builder cpq' }),
@@ -107,7 +110,6 @@ export function buildNavModel({ cfg, orgFeatures, isAdmin, hasCustomers = null }
     item('usage', 'Usage & billing', '/usage', { keywords: 'ai spend stripe plan' }),
     on('plugins_enabled') && item('plugins', 'Plugins & automations', '/plugins', { keywords: 'tools library runs' }),
     item('calendar', 'Calendar', '/calendar', { keywords: 'meetings agenda' }),
-    item('activities', 'Activities', '/activities', { keywords: 'log calls emails notes' }),
     item('notifications', 'Notifications', '/notifications', { keywords: 'inbox alerts' }),
     isAdmin && item('admin', 'Admin', '/admin', { aliases: ['email-templates'], keywords: 'feature flags branding access requests' }),
   ].filter(Boolean);

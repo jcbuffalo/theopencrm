@@ -44,9 +44,9 @@ export default function EmptyState({ title, message, action, icon, className = '
         )
       )}
       {title && (
-        <h3 className="text-base sm:text-lg font-semibold text-gray-900 mb-1">
+        <h2 className="text-base sm:text-lg font-semibold text-gray-900 mb-1">
           {title}
-        </h3>
+        </h2>
       )}
       {message && (
         <p className="text-sm text-gray-600 max-w-md mb-4 leading-relaxed">

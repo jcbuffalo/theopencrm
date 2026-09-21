@@ -23,6 +23,10 @@
 
 // describe / test / expect / beforeEach / vi are global.
 
+// These suites assert the per-alert (instant) email path. Since spec 204 the
+// default delivery mode is a consolidated digest, so pin instant here; the
+// digest path has its own suite (test/notificationDigest.test.js).
+process.env.DEFAULT_EMAIL_DELIVERY_MODE = 'instant';
 const realPool = require('../db');
 const mockPool = realPool;
 mockPool.query   = vi.fn();

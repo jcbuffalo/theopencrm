@@ -66,6 +66,7 @@ function buildApp() {
 beforeEach(() => {
   mockPool.query.mockReset();
   mockPool.connect.mockReset();
+  require('../services/orgHasCustomers')._clearCache();
 });
 
 describe('POST /auth/login', () => {
@@ -217,6 +218,38 @@ describe('GET /auth/me', () => {
     expect(hc.s).toMatch(/lifecycle_stage, 'prospect'\) <> 'prospect'/);
     expect(hc.s).toMatch(/closed_date IS NOT NULL/);
     expect(hc.s).toMatch(/is_won/);
+  });
+
+  test('org_has_customers is cached per org so repeat /auth/me calls skip the EXISTS query', async () => {
+    const token = generateToken(96);
+    let hcCalls = 0;
+    mockPool.query.mockImplementation(async (sql) => {
+      const s = String(sql);
+      if (/FROM users u/i.test(s)) {
+        return { rows: [{
+          id: 96, email: 'cache@b.com', name: 'Cache', status: 'active', org_id: 6001, org_role: 'owner',
+          notification_preferences: {}, notification_email: null, notification_phone: null,
+          org_profile: 'generic', org_name: 'Workspace', org_branding: {}, org_tier: 'free',
+          admin_role: null, admin_permissions: null,
+        }] };
+      }
+      if (/FROM users WHERE id/i.test(s)) return { rows: [{ org_id: 6001, org_role: 'owner', status: 'active' }] };
+      if (/AS has_customers/i.test(s)) { hcCalls += 1; return { rows: [{ has_customers: true }] }; }
+      return { rows: [] };
+    });
+
+    const app = buildApp();
+    const r1 = await request(app).get('/auth/me').set('Cookie', [`${AUTH_COOKIE_NAME}=${token}`]);
+    const r2 = await request(app).get('/auth/me').set('Cookie', [`${AUTH_COOKIE_NAME}=${token}`]);
+    expect(r1.body.user.org_has_customers).toBe(true);
+    expect(r2.body.user.org_has_customers).toBe(true);
+    expect(hcCalls).toBe(1);
+
+    // A write that could flip the answer invalidates the entry.
+    require('../services/orgHasCustomers').invalidate(6001);
+    const r3 = await request(app).get('/auth/me').set('Cookie', [`${AUTH_COOKIE_NAME}=${token}`]);
+    expect(r3.body.user.org_has_customers).toBe(true);
+    expect(hcCalls).toBe(2);
   });
 });
 

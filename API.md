@@ -235,13 +235,25 @@ Zod proof-of-concept).
 |---|---|---|---|---|
 | PUT | `/api/me` | `{ name?, notification_email?, notification_phone? }` (zod `updateProfileSchema`). | `PROFILE_UPDATED` | `meRoutes.js:87` |
 | POST | `/api/me/change-password` | `{ current_password, new_password }`. Subject to `changePasswordLimiter` (5/15min/user). Full registration policy applies: 10+ chars, 3/4 classes, weak-pattern blocklist, last-5 history. 400 for Google-OAuth-only accounts. | `PASSWORD_CHANGE` | `meRoutes.js:139` |
-| PUT | `/api/me/notification-preferences` | `{ preferences: { task_assigned: { email:bool, sms:bool }, task_overdue:{...}, deal_activity:{...}, weekly_summary:{...} } }`. | `NOTIFICATION_PREFERENCES_UPDATED` | `meRoutes.js:238` |
+| PUT | `/api/me/notification-preferences` | `{ task_assigned: { email:bool, sms:bool }, task_overdue:{...}, …, email_delivery: { mode: 'instant'\|'batched'\|'daily', hour: 0-23, tz: IANA } }` — partial merge per key (spec 204: `email_delivery` picks per-alert vs grouped vs one daily digest at `hour` in `tz`). | `NOTIFICATION_PREFERENCES_UPDATED` | `meRoutes.js:244` |
+| POST | `/api/me/notification-digest/send-now` | Sends the caller their daily digest now (queued alerts + live My Day queue, one-click buttons). 1/min/user. Returns `{ success, sent, items, subject?, reason?: 'empty'\|'email_off'\|'no_address' }`. | `NOTIFICATION_PREFERENCES_UPDATED` (`op: digest_send_now`) | `meRoutes.js:312` |
 | GET | `/api/me/export` | Returns a GDPR/CCPA data export bundle (JSON). | — | `meRoutes.js:302` |
 | POST | `/api/me/delete-account` | `{ password? }`. Schedules deletion in 7 days. | — | `meRoutes.js:374` |
 | POST | `/api/me/delete-account/cancel` | Cancels a pending deletion (within the 7-day grace). | — | `meRoutes.js:446` |
 | GET | `/api/me/delete-account/status` | `{ scheduled_for, status }` or `{ scheduled: false }`. | — | `meRoutes.js:468` |
 
 ---
+
+## One-click email actions (`/api/email-actions`) — session-less
+
+Spec 204. The 256-bit single-use token in the path is the credential (sha256 stored, 7-day
+expiry, org/user scope from the token row). CSRF-exempt; per-IP rate-limited. The SPA page
+`/act/:token` is what the email links to; it calls these.
+
+| Method | Path | Body / notes | Source |
+|---|---|---|---|
+| GET | `/api/email-actions/:token` | Describe without acting: `{ ok, action, label, entity_type, entity_id }` or `{ ok:false, status, message, used?, expired? }`. | `emailActionRoutes.js` |
+| POST | `/api/email-actions/:token/apply` | Perform it (single-use): `{ ok, action, entity_type, entity_id, result, message }`; 410 `used`/`expired`, 404 unknown/gone, 403 inactive user. Actions: `task.complete`, `task.snooze`, `deal.next_step.complete`, `deal.next_step.snooze`, `company.touch`, `notification.read`. | `emailActionRoutes.js` |
 
 ## Public access request (`/api/request-access`)
 

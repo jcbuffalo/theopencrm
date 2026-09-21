@@ -26,14 +26,17 @@ const CTA_BASE =
 
 // Primary CTA. Stores the /setup intent, then goes to signup. A plain
 // <button>, not a <Link>, because we need the side effect before navigation.
-export function BuildMyCrmButton({ className = '', size = 'lg', children = 'Build my CRM' }) {
+// `templateId`: a platform workspace template (from /api/public/workspace-
+// templates) to pre-load on /setup after signup — the /crm-for pages pass
+// the live one for their vertical.
+export function BuildMyCrmButton({ className = '', size = 'lg', children = 'Build my CRM', templateId = null }) {
   const navigate = useNavigate();
   const sizeCls = size === 'sm' ? 'min-h-[44px] px-4 py-2 text-sm' : '';
   return (
     <button
       type="button"
       onClick={() => {
-        rememberSetupIntent();
+        rememberSetupIntent({ templateId });
         navigate(SIGNUP_PATH);
       }}
       className={`${CTA_BASE} ${sizeCls} bg-brand-blue hover:bg-brand-blue-dark text-white ${className}`}
@@ -58,11 +61,11 @@ export function GitHubButton({ className = '' }) {
   );
 }
 
-export function CtaPair({ note }) {
+export function CtaPair({ note, templateId = null }) {
   return (
     <div>
       <div className="flex flex-col sm:flex-row gap-3">
-        <BuildMyCrmButton />
+        <BuildMyCrmButton templateId={templateId} />
         <GitHubButton />
       </div>
       <p className="text-sm text-gray-600 mt-3">
