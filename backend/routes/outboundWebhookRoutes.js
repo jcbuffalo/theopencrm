@@ -46,7 +46,15 @@ function requireOrgAdmin(req, res, next) {
 // The domain events a customer can subscribe to today. Kept as an allowlist so
 // a typo in the UI doesn't silently register a hook that never fires. `ping` is
 // the synthetic event the test-fire endpoint emits.
-const KNOWN_EVENTS = ['deal.created', 'deal.stage_changed', 'ping'];
+// Spec 206 part 3 (2026-09-22): widened so a CLI / script can react to the
+// CRM instead of polling. Keep in step with frontend DeveloperSettings
+// WEBHOOK_EVENTS and the emit sites listed in docs/specs/206.
+const KNOWN_EVENTS = [
+  'deal.created', 'deal.updated', 'deal.stage_changed',
+  'contact.created', 'company.created', 'activity.logged',
+  'task.completed', 'lead.captured',
+  'ping',
+];
 
 // Show only a short, non-reversible hint of the secret in list responses.
 function maskSecret(secret) {

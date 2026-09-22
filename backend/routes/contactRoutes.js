@@ -23,6 +23,8 @@
 const express = require('express');
 const { authMiddleware } = require('../auth');
 const pool = require('../db');
+// Outbound webhooks (spec 206 part 3). Top-level require so test suites can vi.mock it.
+const webhookDispatcher = require('../services/webhookDispatcher');
 const { buildBulkUpdate, buildBulkDelete } = require('./_bulkOps');
 const { validateCustomFieldsPayload } = require('./customFieldsRoutes');
 const { validateBody } = require('../middleware/validate');
@@ -444,6 +446,13 @@ router.post('/', validateBody(contactSchemas.createSchema), async (req, res) => 
             email: d.email || null,
           })),
         },
+      });
+    }
+    // Outbound webhook (spec 206 part 3) — post-commit, best-effort.
+    if (req.orgId && result.rows[0]) {
+      const c = result.rows[0];
+      webhookDispatcher.dispatch(req.orgId, 'contact.created', {
+        id: c.id, first_name: c.first_name, last_name: c.last_name, email: c.email, company_id: c.company_id,
       });
     }
     res.status(201).json(result.rows[0]);

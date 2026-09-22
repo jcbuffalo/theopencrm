@@ -244,6 +244,27 @@ describe('flushUser + tick', () => {
     expect(sendMail).not.toHaveBeenCalled();
   });
 
+  test('a failed daily flush gives the day back (claim reset) so the next tick retries', async () => {
+    const dailyUser = { ...baseUser, digest_last_sent_at: new Date('2026-09-21T11:30:00Z'), notification_preferences: { task_overdue: { email: true }, email_delivery: { mode: 'daily', hour: 7, tz: 'America/New_York' } } };
+    const now = new Date('2026-09-22T11:30:00Z');
+    const calls = [];
+    mockPool.query.mockImplementation(async (sql, params) => {
+      const s = String(sql);
+      calls.push([s, params]);
+      if (/SELECT q.user_id, MIN\(q.created_at\)/i.test(s)) return { rows: [] };
+      if (/COALESCE\(notification_preferences->'email_delivery'->>'mode'/i.test(s)) return { rows: [dailyUser] };
+      if (/UPDATE users SET digest_last_sent_at = \$2\s+WHERE id = \$1 AND digest_last_sent_at IS NOT DISTINCT FROM/i.test(s)) return { rows: [{ id: 9 }] };
+      if (/UPDATE notification_email_queue SET digest_id = \$1/i.test(s)) throw new Error('Connection terminated due to connection timeout');
+      return { rows: [] };
+    });
+    const out = await digest.tick({ now });
+    expect(out.errors).toBe(1);
+    expect(out.daily).toBe(0);
+    const reset = calls.find(([s]) => /UPDATE users SET digest_last_sent_at = \$2 WHERE id = \$1 AND digest_last_sent_at = \$3/.test(s));
+    expect(reset).toBeTruthy();
+    expect(reset[1]).toEqual([9, dailyUser.digest_last_sent_at, now]);
+  });
+
   test('tick flushes batched users only once the oldest pending row is 15 min old', async () => {
     const batchedUser = { ...baseUser, notification_preferences: { task_overdue: { email: true }, email_delivery: { mode: 'batched' } } };
     const now = new Date('2026-09-21T11:30:00Z');

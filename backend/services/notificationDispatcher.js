@@ -75,6 +75,10 @@ const KNOWN_CATEGORIES = [
   // Customer-portal document upload (migration 151) — an external customer
   // sent a file through their portal link.
   'portal_document_uploaded',
+  // Platform AI budget / trial-slot alerts (migration 174) — super-admins
+  // only; backfilled email ON for them. The owner's "tell me before we
+  // overspend, through our own system" channel.
+  'platform_budget',
 ];
 
 // --------------------------------------------------------------------------
@@ -1185,8 +1189,62 @@ async function notifyPortalDocumentUploaded(documentId) {
   }
 }
 
+// Platform AI budget / trial-slot alert (migration 174, services/
+// platformBudget.js) → every super-admin, through the normal per-user path
+// (bell always; email per their delivery mode) with a one-click pause /
+// resume button. `payload` = { kind: 'budget'|'trials', step, status, autoPaused }.
+async function notifyPlatformBudget(payload) {
+  const { kind, step, status: st, autoPaused } = payload || {};
+  const admins = await pool.query(
+    `SELECT u.id, u.org_id, u.notification_preferences
+       FROM admin_users au JOIN users u ON u.id = au.user_id
+      WHERE au.role = 'super_admin' AND u.status = 'active'`
+  );
+  const money = (n) => `$${Number(n || 0).toFixed(2)}`;
+  let subject;
+  let body;
+  if (kind === 'budget') {
+    subject = step >= 100
+      ? `AI trial budget spent: ${money(st.mtd_unbilled_cost_usd)} of ${money(st.unbilled_budget_usd)} this month${autoPaused ? ' — new trials paused' : ''}`
+      : `AI trial budget at ${step}%: ${money(st.mtd_unbilled_cost_usd)} of ${money(st.unbilled_budget_usd)} this month`;
+    body = [
+      `Unbilled AI cost (trial + comped orgs, raw Anthropic cost) is ${money(st.mtd_unbilled_cost_usd)} of the ${money(st.unbilled_budget_usd)} monthly budget (${st.budget_pct}%).`,
+      `Trial orgs alone: ${money(st.mtd_trial_cost_usd)}. Active trials: ${st.active_trials} of ${st.trial_max_active}.`,
+      autoPaused ? `New AI trials were paused automatically. Existing trials keep running under their ${money(st.trial_org_hard_cap_usd)} per-org cap.` : `Each trial org is capped at ${money(st.trial_org_hard_cap_usd)}/month.`,
+    ].join('\n');
+  } else {
+    subject = step >= 100
+      ? `Trial slots full: ${st.active_trials} of ${st.trial_max_active} active — new signups get no AI trial`
+      : `Trial slots at ${step}%: ${st.active_trials} of ${st.trial_max_active} active`;
+    body = [
+      `${st.active_trials} orgs are on a live AI trial (limit ${st.trial_max_active}). Beyond the limit a new signup gets a workspace with AI 'unconfigured' until a card is on file.`,
+      `Unbilled cost this month: ${money(st.mtd_unbilled_cost_usd)} of ${money(st.unbilled_budget_usd)}.`,
+    ].join('\n');
+  }
+  const html = `<p>${escapeHtml(body).replace(/\n/g, '<br>')}</p>`;
+  const actions = st.trials_enabled
+    ? [{ action: 'platform.trials.pause', entity_id: 1, label: 'Pause new trials' }]
+    : [{ action: 'platform.trials.resume', entity_id: 1, label: 'Resume new trials' }];
+  const outcomes = [];
+  for (const admin of admins.rows) {
+    let outcome = { email: 'skipped', sms: 'skipped' };
+    if (!categoryFullyDisabled(admin.notification_preferences, 'platform_budget')) {
+      // eslint-disable-next-line no-await-in-loop
+      outcome = await dispatch(admin.id, 'platform_budget', {
+        subject, text: `${body}\n\nReview at ${PUBLIC_BASE_URL}/admin/ai-billing`, html,
+        link: '/admin/ai-billing', entityType: 'platform', entityId: 1, actions,
+      });
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await persistInApp({ orgId: admin.org_id || null, userId: admin.id, type: 'platform_budget', title: subject, body, link: '/admin/ai-billing', entityType: 'platform', entityId: 1 });
+    outcomes.push({ userId: admin.id, ...outcome });
+  }
+  return outcomes;
+}
+
 module.exports = {
   dispatch,
+  notifyPlatformBudget,
   notifyTaskAssigned,
   notifyTaskOverdue,
   notifyDealActivity,

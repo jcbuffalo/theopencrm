@@ -127,6 +127,9 @@ const updateNotificationPreferencesSchema = z
     portal_quote_response:  channelMatrix.optional(),
     portal_message_received: channelMatrix.optional(),
     portal_document_uploaded: channelMatrix.optional(),
+    // Platform AI budget / trial-slot alerts (migration 174) — only ever
+    // dispatched to super-admins; harmless for anyone else to toggle.
+    platform_budget:        channelMatrix.optional(),
   })
   .strict();
 

@@ -268,6 +268,11 @@ function isCsrfExempt(req) {
   // One-click actions from notification emails (spec 204): session-less, the
   // 256-bit single-use token in the path is the credential.
   if (p.startsWith('/api/email-actions/')) return true;
+  // API-key requests (spec 206): a tocrm_ key in a custom header cannot be
+  // sent cross-site without a CORS preflight, so double-submit CSRF does not
+  // apply. The key itself is the credential; auth.js/authMiddleware resolves
+  // it (and a cookie session, if one is also present, still wins there).
+  if (require('./middleware/apiKeyAuth').hasApiKey(req) && !(req.cookies && req.cookies[require('./auth').AUTH_COOKIE_NAME])) return true;
   if (p.startsWith('/api/public/lead-forms/')) return true;
   if (p.startsWith('/api/public/surveys/')) return true;
   // Customer portal public reads (no session; the 192-bit portal token in the
@@ -877,8 +882,19 @@ console.log('✅ Mounted: /api/keys (API-key management — session auth + org-a
 app.use('/api/webhooks-out', outboundWebhookRoutes);
 console.log('✅ Mounted: /api/webhooks-out (outbound webhook management — session auth + org-admin)');
 
-app.use('/api/v1', apiV1Routes);
-console.log('✅ Mounted: /api/v1 (public read API — authenticated by API key)');
+// /api/v1 façade (spec 206): the SAME org-scoped routers the browser uses,
+// mounted under a versioned, API-key-only prefix. apiKeyAuth runs first
+// (401 without a key; scope + route guardrails inside), then each router's
+// own authMiddleware short-circuits because req.userId is already set. So a
+// CLI gets full CRUD on companies / contacts / deals / tasks / activities /
+// leads, CSV import, pipelines, My Day, notifications, custom fields,
+// search, the copilot (chat + proposals + apply), plugin runs and outbound
+// webhook subscriptions — one credential, zero duplicated handlers. Feature
+// gates and the AI billing gate apply exactly as they do for the browser.
+// Keys ALSO work on the plain /api/* routes (auth.js fallback); /api/v1 is
+// the documented, stable spelling.
+// (Mounted further down, after the AI billing gate and plugin routes the
+// façade reuses are declared — see "API-key façade mounts".)
 
 // Saved views — per-user tabbed presets above each list page (Companies /
 // Contacts / Deals / Tasks). New surface introduced with migration 068.
@@ -1078,6 +1094,40 @@ console.log('✅ Mounted: /api/usage (per-org AI / module consumption)');
 // aiLimiter applied here because /api/plugins/from-prompt invokes Claude.
 // The other plugin routes don't burn AI but the limit is cheap insurance.
 app.use('/api/plugins', aiLimiter, require('./routes/pluginRoutes'));
+
+// API-key façade mounts (spec 206) — the same org-scoped routers the browser
+// uses, under /api/v1. `/api/v1` (apiV1Routes, mounted earlier) already ran
+// apiKeyAuth for /me and falls through for everything else, so the wrapper
+// here only authenticates when nothing resolved the key yet; each router's
+// own authMiddleware then short-circuits on req.userId. Feature gates and
+// the AI billing gate apply exactly as for the browser.
+{
+  const { apiKeyAuth } = require('./middleware/apiKeyAuth');
+  const v1KeyAuth = (req, res, next) => (req.apiKey ? next() : apiKeyAuth(req, res, next));
+  const v1 = [
+    ['/companies', [companyRoutes]],
+    ['/contacts', [contactRoutes]],
+    ['/deals', [dealRoutes]],
+    ['/tasks', [taskRoutes]],
+    ['/activities', [activityRoutes]],
+    ['/leads', [requireFeature('leads_enabled'), leadRoutes]],
+    ['/import', [importRoutes]],
+    ['/pipelines', [pipelineRoutes]],
+    ['/my-day', [require('./routes/myDayRoutes')]],
+    ['/notifications', [require('./routes/notificationRoutes')]],
+    ['/custom-fields', [require('./routes/customFieldsRoutes')]],
+    ['/search', [searchRoutes]],
+    ['/webhooks-out', [outboundWebhookRoutes]],
+    ['/plugins', [aiLimiter, require('./routes/pluginRoutes')]],
+    ['/ai', [aiLimiter, aiBillingGateExceptStatus, requireFeature('ai_features_enabled'), aiRoutes]],
+  ];
+  for (const [path, stack] of v1) app.use(`/api/v1${path}`, v1KeyAuth, ...stack);
+  console.log('✅ Mounted: /api/v1/{companies,contacts,deals,tasks,activities,leads,import,pipelines,my-day,notifications,custom-fields,search,webhooks-out,plugins,ai} (API-key façade)');
+}
+// /api/v1/me (+ the legacy capped lists as a fallback) — after the façade so
+// the full routers answer first.
+app.use('/api/v1', apiV1Routes);
+console.log('✅ Mounted: /api/v1/me (API-key identity)');
 console.log('✅ Mounted: /api/plugins (per-IP rate limited + gated by plugins_enabled)');
 
 // Stripe billing (Phase F scaffold; 503s gracefully when STRIPE_SECRET_KEY
@@ -1477,6 +1527,20 @@ async function onListening() {
       aiThresholdWorker.startScheduler({ intervalMinutes: minutes });
     } catch (err) {
       console.error('Failed to start AI threshold worker:', err.message);
+    }
+  }
+
+  // Platform AI budget guardrails (migration 174): hourly. Bounds the
+  // AGGREGATE trial exposure (max active trials, per-trial-org cap, monthly
+  // unbilled budget → auto-pause new trials) and alerts super-admins through
+  // the CRM's own notifications with a one-click pause/resume button.
+  if (automationEnabled) {
+    try {
+      const platformBudgetWorker = require('./services/platformBudgetWorker');
+      const minutes = Number(process.env.PLATFORM_BUDGET_WORKER_INTERVAL_MINUTES) || 60;
+      platformBudgetWorker.startScheduler({ intervalMinutes: minutes });
+    } catch (err) {
+      console.error('Failed to start platform budget worker:', err.message);
     }
   }
 

@@ -1,3 +1,5 @@
+// Opt back in to real outbound-webhook dispatch (services/webhookDispatcher.js skips it under NODE_ENV=test otherwise).
+process.env.WEBHOOKS_IN_TESTS = 'true';
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 John Coles - The Open CRM
 // This file is part of The Open CRM, free software under the GNU AGPL v3.0 or

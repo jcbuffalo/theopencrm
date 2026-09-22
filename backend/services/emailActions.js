@@ -166,6 +166,28 @@ const ACTIONS = {
     },
   },
 
+  // Platform guardrails (migration 174): the owner's budget alert carries a
+  // one-click "Pause new trials". Super-admin is re-checked at APPLY time —
+  // a token minted for a super-admin who has since been demoted does nothing.
+  'platform.trials.pause': {
+    entityType: 'platform',
+    label: 'Pause new trials',
+    async run(row) {
+      await assertSuperAdmin(row.user_id);
+      await require('./platformBudget').setTrialsEnabled(false, { userId: row.user_id });
+      return { result: { trials_enabled: false }, message: 'New AI trials are paused. Existing trials keep running under their own cap. Resume from /admin/ai-billing.' };
+    },
+  },
+  'platform.trials.resume': {
+    entityType: 'platform',
+    label: 'Resume new trials',
+    async run(row) {
+      await assertSuperAdmin(row.user_id);
+      await require('./platformBudget').setTrialsEnabled(true, { userId: row.user_id });
+      return { result: { trials_enabled: true }, message: 'New AI trials are accepted again.' };
+    },
+  },
+
   // Mark one in-app notification read (the digest's "Dismiss").
   'notification.read': {
     entityType: 'notification',
@@ -186,6 +208,15 @@ function notFound(message) {
   const e = new Error(message);
   e.status = 404;
   return e;
+}
+
+async function assertSuperAdmin(userId) {
+  const r = await pool.query(`SELECT 1 FROM admin_users WHERE user_id = $1 AND role = 'super_admin'`, [userId]);
+  if (r.rows.length === 0) {
+    const e = new Error('Only a super-admin can do that.');
+    e.status = 403;
+    throw e;
+  }
 }
 
 function isKnownAction(action) {

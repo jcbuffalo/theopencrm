@@ -36,6 +36,13 @@ router.get('/me', (req, res) => {
   });
 });
 
+// Since spec 206 (2026-09-22) every other /api/v1/* path is served by the
+// full CRM routers mounted in index.js ("API-key façade mounts"); the two
+// capped read-only lists that used to live here are superseded by
+// GET /api/v1/deals and GET /api/v1/contacts from those routers (same
+// org scoping, full query/filter support). They are kept below ONLY as a
+// fallback for a key whose creator's router mount is feature-gated off.
+
 // GET /api/v1/deals — read-only list, org-scoped, capped.
 router.get('/deals', async (req, res) => {
   try {

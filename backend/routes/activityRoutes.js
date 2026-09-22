@@ -7,6 +7,8 @@
 const express = require('express');
 const { authMiddleware } = require('../auth');
 const pool = require('../db');
+// Outbound webhooks (spec 206 part 3). Top-level require so test suites can vi.mock it.
+const webhookDispatcher = require('../services/webhookDispatcher');
 const notificationDispatcher = require('../services/notificationDispatcher');
 const { validateBody } = require('../middleware/validate');
 const { createSchema, updateSchema } = require('../schemas/activities');
@@ -135,6 +137,13 @@ router.post('/', validateBody(createSchema), async (req, res) => {
         .catch(err => console.warn('notify_deal_activity_owner_lookup_failed', err && err.message ? err.message : err));
     }
 
+    // Outbound webhook (spec 206 part 3) — best-effort.
+    if (req.orgId && created) {
+      webhookDispatcher.dispatch(req.orgId, 'activity.logged', {
+        id: created.id, type: created.type || created.activity_type, subject: created.subject,
+        deal_id: created.deal_id, contact_id: created.contact_id, activity_date: created.activity_date,
+      });
+    }
     res.status(201).json(created);
   } catch (error) {
     res.status(500).json({ error: 'Failed to create activity' });

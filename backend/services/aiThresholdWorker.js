@@ -141,11 +141,14 @@ async function runOnce({ now = new Date() } = {}) {
       // blows straight past both ceilings still halts even after the warn
       // already fired. Only billable statuses are subject (see header).
       if (org.ai_billing_status === 'active' || org.ai_billing_status === 'trial') {
-        const rawCap = org.ai_monthly_hard_cap_usd;
-        const parsedCap = Number(rawCap);
-        const hardCap = (rawCap === null || rawCap === undefined || !Number.isFinite(parsedCap))
-          ? DEFAULT_HARD_CAP_USD
-          : parsedCap;
+        // Trial orgs are additionally capped by AI_TRIAL_ORG_HARD_CAP_USD
+        // (migration 174 guardrails) — a stranger on a free trial should
+        // never be able to spend the $200 general cap.
+        const hardCap = require('./platformBudget').effectiveHardCap({
+          ai_billing_status: org.ai_billing_status,
+          orgCapUsd: org.ai_monthly_hard_cap_usd,
+          defaultCapUsd: DEFAULT_HARD_CAP_USD,
+        });
         // eslint-disable-next-line no-await-in-loop
         const capSummary = await aiMetering.summarizeMonthForOrg(
           orgId,

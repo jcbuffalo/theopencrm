@@ -33,6 +33,8 @@
 const express = require('express');
 const crypto = require('crypto');
 const pool = require('../db');
+// Outbound webhooks (spec 206 part 3). Top-level require so test suites can vi.mock it.
+const webhookDispatcher = require('../services/webhookDispatcher');
 const { authMiddleware } = require('../auth');
 const leads = require('../services/leads');
 const featureFlags = require('../services/featureFlags');
@@ -267,6 +269,15 @@ publicRouter.post('/:token/submit', async (req, res) => {
     if (capturedLead && capturedLead.id) {
       notificationDispatcher.notifyLeadCaptured(capturedLead.id)
         .catch(err => console.warn('notify_lead_captured_failed', err && err.message ? err.message : err));
+      // Outbound webhook (spec 206 part 3) to the FORM's org — the public
+      // submit has no session, so the org comes from the form row.
+      if (form && form.org_id) {
+        webhookDispatcher.dispatch(form.org_id, 'lead.captured', {
+          id: capturedLead.id, form_id: form.id, email: capturedLead.email || null,
+          name: capturedLead.name || [capturedLead.first_name, capturedLead.last_name].filter(Boolean).join(' ') || null,
+          company: capturedLead.company || capturedLead.company_name || null, source: 'lead_form',
+        });
+      }
     }
 
     // Minimal response: acknowledge + the form's own redirect target.

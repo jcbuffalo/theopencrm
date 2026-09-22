@@ -260,7 +260,17 @@ async function authMiddleware(req, res, next) {
 
   const { token } = extractToken(req);
 
+  // API-key fallback (spec 206): no session cookie but a tocrm_ key in the
+  // Authorization / X-API-Key header → the key authenticates this request on
+  // the same org-scoped route, with the scope + route guardrails in
+  // middleware/apiKeyAuth.js. A cookie session always wins when both exist.
   if (!token) {
+    const { hasApiKey, resolveApiKey } = require('./middleware/apiKeyAuth');
+    if (hasApiKey(req)) {
+      const out = await resolveApiKey(req);
+      if (!out.ok) return res.status(out.status).json(out.body);
+      return next();
+    }
     return res.status(401).json({ success: false, message: 'Unauthorized' });
   }
 

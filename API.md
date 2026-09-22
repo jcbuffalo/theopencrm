@@ -244,6 +244,15 @@ Zod proof-of-concept).
 
 ---
 
+## Platform AI budget guardrails (`/api/billing/ai/admin/platform-budget`) — super-admin
+
+Spec 205, migration 174. The same status object also rides along on `GET /api/billing/ai/admin/list` as `platform_budget`.
+
+| Method | Path | Body / notes | Source |
+|---|---|---|---|
+| GET | `/api/billing/ai/admin/platform-budget` | `{ period, trials_enabled, accepting_trials, reason: null\|'paused'\|'max_active'\|'budget', active_trials, trial_max_active, trial_pct, trial_org_hard_cap_usd, mtd_trial_cost_usd, mtd_unbilled_cost_usd, mtd_all_cost_usd, unbilled_budget_usd, budget_pct }` | `billingRoutes.js` |
+| POST | `/api/billing/ai/admin/platform-budget/trials` | `{ enabled: bool }` — pause/resume NEW trials (`platform_settings.ai_trials_enabled`); returns the status. Audited. | `billingRoutes.js` |
+
 ## One-click email actions (`/api/email-actions`) — session-less
 
 Spec 204. The 256-bit single-use token in the path is the credential (sha256 stored, 7-day
@@ -253,7 +262,7 @@ expiry, org/user scope from the token row). CSRF-exempt; per-IP rate-limited. Th
 | Method | Path | Body / notes | Source |
 |---|---|---|---|
 | GET | `/api/email-actions/:token` | Describe without acting: `{ ok, action, label, entity_type, entity_id }` or `{ ok:false, status, message, used?, expired? }`. | `emailActionRoutes.js` |
-| POST | `/api/email-actions/:token/apply` | Perform it (single-use): `{ ok, action, entity_type, entity_id, result, message }`; 410 `used`/`expired`, 404 unknown/gone, 403 inactive user. Actions: `task.complete`, `task.snooze`, `deal.next_step.complete`, `deal.next_step.snooze`, `company.touch`, `notification.read`. | `emailActionRoutes.js` |
+| POST | `/api/email-actions/:token/apply` | Perform it (single-use): `{ ok, action, entity_type, entity_id, result, message }`; 410 `used`/`expired`, 404 unknown/gone, 403 inactive user. Actions: `task.complete`, `task.snooze`, `deal.next_step.complete`, `deal.next_step.snooze`, `company.touch`, `notification.read`, `platform.trials.pause` / `platform.trials.resume` (super-admin re-checked at apply). | `emailActionRoutes.js` |
 
 ## Public access request (`/api/request-access`)
 
@@ -771,6 +780,35 @@ event, schedule); failed runs never commit; all sandbox caps unchanged; writes a
 with `autonomous: true`. `run_mode` appears on plugin list/detail/run payloads and the
 library's `installed_run_mode`; install endpoints accept `{ run_mode }`
 (non-admin requesting autonomous → 403).
+
+## API keys as a credential + the `/api/v1` façade (spec 206 — 2026-09-22)
+
+An API key (`Settings → Developer`, `tocrm_…`, sent as `Authorization: Bearer` or `X-API-Key`)
+now authenticates **the same org-scoped routers the browser uses**. Nothing is duplicated:
+`auth.js authMiddleware` falls back to `middleware/apiKeyAuth.resolveApiKey` when there is no
+session cookie. The key acts as its creator (org, current org_role, write attribution) and
+stops working if the creator is suspended or deleted.
+
+| Rule | Detail |
+|---|---|
+| Scope | `read` keys: GET/HEAD/OPTIONS only. `write` keys ("Allow writes" at creation): everything else. 403 `API_KEY_SCOPE`. |
+| Denylist (any scope) | `/auth`, `/security`, `/me` (except `/api/v1/me`), `/admin`, `/billing`, `/keys`, `/org`, `/team`, `/invites`, `/gateway`, `/sso`, `/platform-integrations`, OAuth connectors, `/access-requests`, `/contact`, `/request-access`, `/legal`, `/portal`, inbound `/webhooks`. 403 `API_KEY_FORBIDDEN_ROUTE`. |
+| CSRF | Exempt for key-authenticated requests with no auth cookie (custom header ⇒ CORS preflight ⇒ no cross-site forgery). |
+| Gates | Feature flags, the AI billing gate and rate limits apply exactly as for the browser. |
+| Failure posture | Unknown/revoked key, inactive creator, or a DB error during lookup → 401 (fail closed). |
+
+`/api/v1/<resource>` is the documented, versioned spelling; the plain `/api/<resource>` paths accept keys too.
+
+| Prefix under `/api/v1` | Router | Notes |
+|---|---|---|
+| `/me` | `apiV1Routes.js` | `{ api_key: { name, key_prefix, scopes }, org_id }` |
+| `/companies`, `/contacts`, `/deals`, `/tasks`, `/activities` | the CRM routers | full CRUD, same bodies as the browser (see sections above) |
+| `/leads` | `leadRoutes.js` | `leads_enabled` gate |
+| `/import` | `importRoutes.js` | `POST /parse` (multipart `file`) then `POST /contacts|companies|deals` |
+| `/pipelines`, `/custom-fields`, `/search`, `/my-day`, `/notifications` | as named | |
+| `/ai` | `aiRoutes.js` | `POST /chat`, `POST /actions/apply`, `GET /chat/sessions` — metered to the key's org |
+| `/plugins` | `pluginRoutes.js` | `POST /:id/run` |
+| `/webhooks-out` | `outboundWebhookRoutes.js` | subscriptions (org-admin creator required) |
 
 ## AI Gateway (spec 202 v1, migration 168 — 2026-09-18)
 

@@ -53,6 +53,71 @@ function ThresholdBar({ pct }) {
   );
 }
 
+// Platform guardrails (migration 174): the aggregate numbers the per-org
+// table can't show — live trial slots, month-to-date unbilled cost against
+// the budget, and the one switch that stops new trials.
+// `st` is the platform_budget object from GET /billing/ai/admin/list (null
+// when the backend could not compute it); `onChange` receives the fresh
+// status after a pause/resume.
+function PlatformBudgetCard({ st, onChange }) {
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const toggle = async () => {
+    if (!st) return;
+    setBusy(true);
+    try {
+      const r = await api.post('/billing/ai/admin/platform-budget/trials', { enabled: !st.trials_enabled });
+      onChange(r.data);
+    } catch (e) {
+      setErr(e.response?.data?.error || e.message || 'Failed to update');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ready = st && typeof st.unbilled_budget_usd === 'number';
+
+  const pctTone = (p) => (p >= 100 ? 'text-red-700' : p >= 80 ? 'text-amber-700' : 'text-gray-900');
+
+  return (
+    <Card
+      title="Platform AI budget"
+      subtitle="Aggregate exposure across every org we are not billing (trials + comped). Alerts go to super-admins at 50 / 80 / 100% through Notifications; new trials pause automatically at 100%."
+      data-testid="platform-budget-card"
+    >
+      {err && <Alert tone="danger" className="mb-3" onDismiss={() => setErr(null)}>{err}</Alert>}
+      {!ready ? (
+        <p className="text-sm text-gray-500">{st === null ? 'Not available (run migration 174).' : 'Loading…'}</p>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-gray-500">Unbilled cost, {st.period}</div>
+            <div className={`text-2xl font-bold ${pctTone(st.budget_pct)}`}>${st.mtd_unbilled_cost_usd.toFixed(2)}</div>
+            <div className="text-gray-600">of ${st.unbilled_budget_usd} budget ({st.budget_pct}%) · trials alone ${st.mtd_trial_cost_usd.toFixed(2)}</div>
+          </div>
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-gray-500">Live AI trials</div>
+            <div className={`text-2xl font-bold ${pctTone(st.trial_pct)}`}>{st.active_trials}</div>
+            <div className="text-gray-600">of {st.trial_max_active} slots · each capped at ${st.trial_org_hard_cap_usd}/mo</div>
+          </div>
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-gray-500">New trials</div>
+            <div className={`text-2xl font-bold ${st.accepting_trials ? 'text-green-700' : 'text-red-700'}`}>
+              {st.accepting_trials ? 'Accepting' : `Off (${st.reason === 'paused' ? 'paused' : st.reason === 'max_active' ? 'slots full' : st.reason === 'budget' ? 'budget spent' : st.reason})`}
+            </div>
+            <div className="mt-2">
+              <Button variant={st.trials_enabled ? 'secondary' : 'primary'} size="sm" onClick={toggle} disabled={busy}>
+                {st.trials_enabled ? 'Pause new trials' : 'Resume new trials'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function AdminAiBilling() {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === 'super_admin' || user?.is_super_admin;
@@ -61,6 +126,8 @@ export default function AdminAiBilling() {
   const [err, setErr] = useState(null);
   const [overThresholdOnly, setOverThresholdOnly] = useState(false);
   const [busy, setBusy] = useState({}); // { [orgId]: true while a row action is in flight }
+  // undefined = not loaded yet; null = backend could not compute (pre-174)
+  const [platformBudget, setPlatformBudget] = useState(undefined);
 
   const load = useCallback(async () => {
     setErr(null);
@@ -68,6 +135,7 @@ export default function AdminAiBilling() {
       const r = await api.get('/billing/ai/admin/list');
       setOrgs(r.data.orgs || []);
       setConfigured(!!r.data.configured);
+      setPlatformBudget(r.data.platform_budget === undefined ? null : r.data.platform_budget);
     } catch (e) {
       setErr(e.response?.data?.error || e.message || 'Failed to load');
     }
@@ -145,6 +213,7 @@ export default function AdminAiBilling() {
         />
 
         <div className="space-y-6">
+          {isSuperAdmin && <PlatformBudgetCard st={platformBudget} onChange={setPlatformBudget} />}
           {!configured && (
             <Alert tone="warning" title="Stripe usage price not configured">
               STRIPE_PRICE_AI_USAGE not set — checkout will 503

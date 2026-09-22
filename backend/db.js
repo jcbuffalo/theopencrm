@@ -20,7 +20,14 @@ const dbConfig = {
   database: process.env.DB_NAME || 'lightweight_crm',
   max: 20,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  // 15s, not 5s: the 2026-09-22 review found every background worker
+  // logging "Connection terminated due to connection timeout" in bursts
+  // right after each cold start (a dozen workers' first ticks racing the
+  // Cloud SQL socket in the first minute) and during idle CPU throttling.
+  // A request that has to wait a few extra seconds for a pool slot beats
+  // a worker tick that silently does nothing. statement_timeout below
+  // still bounds the query itself.
+  connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS) || 15000,
   // Kill any single query that runs longer than 30s. Without this, one
   // pathological query (missing index, runaway join) holds a pool slot
   // indefinitely and starves the rest of the app.

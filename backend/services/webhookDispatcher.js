@@ -112,6 +112,14 @@ async function deliverOne(webhook, event, rawBody) {
 // resolves once all deliveries have been attempted (and logged), never rejects.
 async function dispatch(orgId, event, payload) {
   if (!orgId || !event) return;
+  // Test bypass (repo convention for DB-hitting side effects, cf. tierLimits
+  // and the platform budget gate): route suites drive ordered pool mocks and
+  // count queries exactly, so the subscription lookup is skipped under
+  // NODE_ENV=test unless a suite opts in with WEBHOOKS_IN_TESTS=true
+  // (webhookDispatcher.test.js does).
+  if (process.env.NODE_ENV === 'test' && process.env.WEBHOOKS_IN_TESTS !== 'true') {
+    return { delivered: 0, skipped: 'test' };
+  }
   try {
     const r = await pool.query(
       `SELECT id, url, secret, secret_ct, secret_iv, secret_tag, events

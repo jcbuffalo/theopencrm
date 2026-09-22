@@ -32,10 +32,25 @@ function trialDays() {
 // Returns the inserted { id } row, or null when onConflictDoNothing swallowed
 // a duplicate.
 async function createSelfServeOrg(db, { name, ownerUserId, onConflictDoNothing = false }) {
-  const days = trialDays();
+  let days = trialDays();
   const cols = ['name', 'owner_user_id', 'limits_tier'];
   const vals = ['$1', '$2', "'free'"];
   const params = [name, ownerUserId];
+  // Platform guardrails (migration 174): no trial when trials are paused,
+  // the active-trial slots are full, or the unbilled monthly budget is
+  // spent. The org still gets its workspace — AI just waits for a card.
+  // Test bypass (repo convention for DB-hitting gates — see feedback in
+  // CONTRACTOR_ONBOARDING): the signup suites drive this path with ordered
+  // pool mocks, so the gate's extra reads would shift every later query.
+  // platformBudget.test.js opts back in with PLATFORM_BUDGET_GATE_IN_TESTS.
+  const gateOn = process.env.NODE_ENV !== 'test' || process.env.PLATFORM_BUDGET_GATE_IN_TESTS === 'true';
+  if (days > 0 && gateOn) {
+    const gate = await require('./platformBudget').canProvisionTrial({ db });
+    if (!gate.ok) {
+      console.info(`[selfServeOrg] no AI trial for new org "${name}": ${gate.reason}`);
+      days = 0;
+    }
+  }
   if (days > 0) {
     params.push(days);
     cols.push('ai_billing_status', 'ai_billing_trial_ends_at');

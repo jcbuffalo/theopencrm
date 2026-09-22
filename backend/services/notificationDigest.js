@@ -481,8 +481,20 @@ async function tick({ now = new Date() } = {}) {
         [user.id, now, user.digest_last_sent_at]
       );
       if (claim.rows.length === 0) continue;
-      const r = await flushUser(user, { kind: 'daily', now });
-      if (r.sent) out.daily += 1; else out.skipped += 1;
+      try {
+        const r = await flushUser(user, { kind: 'daily', now });
+        if (r.sent) out.daily += 1; else out.skipped += 1;
+      } catch (err) {
+        // Give the day back so the next tick (5 min) retries inside the
+        // user's hour instead of silently skipping them until tomorrow —
+        // seen 2026-09-22 when a cold-start DB connection timeout hit one
+        // user's flush at 07:05.
+        try {
+          await pool.query('UPDATE users SET digest_last_sent_at = $2 WHERE id = $1 AND digest_last_sent_at = $3',
+            [user.id, user.digest_last_sent_at, now]);
+        } catch { /* best effort */ }
+        throw err;
+      }
     } catch (err) {
       out.errors += 1;
       console.warn('digest_daily_flush_failed', { userId: user.id, error: err && err.message });

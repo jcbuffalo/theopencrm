@@ -902,6 +902,37 @@ router.delete('/ai/gateway-keys/:id', async (req, res) => {
   }
 });
 
+// Platform AI budget guardrails (migration 174) — super-admin only.
+//   GET  /ai/admin/platform-budget            → status numbers + verdict
+//   POST /ai/admin/platform-budget/trials     { enabled } → pause/resume new trials
+router.get('/ai/admin/platform-budget', async (req, res) => {
+  if (!req.userId || !(await isSuperAdmin(req.userId))) {
+    return res.status(403).json({ error: 'Super-admin only' });
+  }
+  try {
+    res.json(await require('../services/platformBudget').status());
+  } catch (err) {
+    if (req.log) req.log.error('platform_budget_status_failed', { error: err });
+    res.status(500).json({ error: 'Failed to load platform budget' });
+  }
+});
+
+router.post('/ai/admin/platform-budget/trials', async (req, res) => {
+  if (!req.userId || !(await isSuperAdmin(req.userId))) {
+    return res.status(403).json({ error: 'Super-admin only' });
+  }
+  try {
+    const enabled = req.body && req.body.enabled === true;
+    const platformBudget = require('../services/platformBudget');
+    await platformBudget.setTrialsEnabled(enabled, { userId: req.userId });
+    audit.fromReq(req, { event: audit.EVENTS.BILLING_AI_HALTED, meta: { op: enabled ? 'platform_trials_resume' : 'platform_trials_pause' } });
+    res.json(await platformBudget.status());
+  } catch (err) {
+    if (req.log) req.log.error('platform_budget_trials_failed', { error: err });
+    res.status(500).json({ error: 'Failed to update trial setting' });
+  }
+});
+
 // GET /ai/admin/list — super-admin only. Returns every org's billing snapshot
 // for the /admin/ai-billing page. Org admins should call /ai/status instead.
 router.get('/ai/admin/list', async (req, res) => {
@@ -943,7 +974,11 @@ router.get('/ai/admin/list', async (req, res) => {
         has_stripe_customer: !!r.stripe_customer_id,
       });
     }
-    res.json({ success: true, configured: !!process.env.STRIPE_PRICE_AI_USAGE, orgs: rows });
+    // Platform guardrails (migration 174) ride along so the admin page
+    // needs no second request; null if the status query fails.
+    let platform_budget = null;
+    try { platform_budget = await require('../services/platformBudget').status(); } catch { platform_budget = null; }
+    res.json({ success: true, configured: !!process.env.STRIPE_PRICE_AI_USAGE, orgs: rows, platform_budget });
   } catch (err) {
     if (req.log) req.log.error('billing_ai_admin_list_failed', { error: err });
     res.status(500).json({ success: false, error: err.message || 'Failed to list AI billing' });

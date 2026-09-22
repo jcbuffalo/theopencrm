@@ -86,10 +86,15 @@ function looksLikeApiKey(token) {
 async function findActiveByPlaintext(fullKey) {
   if (!looksLikeApiKey(fullKey)) return null;
   const keyHash = sha256Hex(fullKey);
+  // The creator's org_role / status ride along: a key acts AS its creator
+  // (org-admin keys can manage webhooks and pipelines; a key whose creator
+  // was suspended or deleted stops working — checked by the middleware).
   const r = await pool.query(
-    `SELECT id, org_id, name, key_prefix, scopes, created_by, last_used_at, revoked_at, created_at
-       FROM api_keys
-      WHERE key_hash = $1`,
+    `SELECT k.id, k.org_id, k.name, k.key_prefix, k.scopes, k.created_by, k.last_used_at, k.revoked_at, k.created_at,
+            u.org_role AS creator_org_role, u.status AS creator_status, u.org_id AS creator_org_id
+       FROM api_keys k
+       LEFT JOIN users u ON u.id = k.created_by
+      WHERE k.key_hash = $1`,
     [keyHash]
   );
   const row = r.rows[0];

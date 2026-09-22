@@ -7,6 +7,8 @@
 const express = require('express');
 const { authMiddleware } = require('../auth');
 const pool = require('../db');
+// Outbound webhooks (spec 206 part 3). Top-level require so test suites can vi.mock it.
+const webhookDispatcher = require('../services/webhookDispatcher');
 const { buildBulkUpdate, buildBulkDelete } = require('./_bulkOps');
 const { validateCustomFieldsPayload } = require('./customFieldsRoutes');
 const notificationDispatcher = require('../services/notificationDispatcher');
@@ -199,6 +201,13 @@ router.put('/:id', validateBody(taskSchemas.updateSchema), async (req, res) => {
         priorStatus,
         completedBy: req.userId,
       });
+      // Outbound webhook (spec 206 part 3) on the same transition.
+      if (updated.status === 'done' && priorStatus !== 'done') {
+        webhookDispatcher.dispatch(req.orgId, 'task.completed', {
+          id: updated.id, title: updated.title, deal_id: updated.deal_id, contact_id: updated.contact_id,
+          assigned_to: updated.assigned_to, completed_by: req.userId,
+        });
+      }
     }
 
     // Additive: clients that only know the task shape ignore the extra key;

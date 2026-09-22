@@ -228,4 +228,37 @@ describe('AdminAiBilling', () => {
     expect(api.post).not.toHaveBeenCalled();
     promptSpy.mockRestore();
   });
+
+  it('renders the platform budget card from the list payload and pauses new trials with one click', async () => {
+    api.get.mockResolvedValueOnce({
+      data: {
+        configured: true,
+        orgs: [],
+        platform_budget: {
+          period: '2026-09', trials_enabled: true, accepting_trials: true, reason: null,
+          active_trials: 4, trial_max_active: 25, trial_pct: 16, trial_org_hard_cap_usd: 25,
+          mtd_trial_cost_usd: 12.5, mtd_unbilled_cost_usd: 90, mtd_all_cost_usd: 400, unbilled_budget_usd: 300, budget_pct: 30,
+        },
+      },
+    });
+    api.post.mockResolvedValueOnce({ data: { trials_enabled: false, accepting_trials: false, reason: 'paused', active_trials: 4, trial_max_active: 25, trial_pct: 16, trial_org_hard_cap_usd: 25, mtd_trial_cost_usd: 12.5, mtd_unbilled_cost_usd: 90, mtd_all_cost_usd: 400, unbilled_budget_usd: 300, budget_pct: 30, period: '2026-09' } });
+    renderPage();
+    const card = await screen.findByTestId('platform-budget-card');
+    expect(card.textContent).toMatch(/\$90\.00/);
+    expect(card.textContent).toMatch(/of \$300 budget \(30%\)/);
+    expect(card.textContent).toMatch(/4/);
+    expect(card.textContent).toMatch(/of 25 slots/);
+    expect(card.textContent).toMatch(/Accepting/);
+    fireEvent.click(screen.getByRole('button', { name: /pause new trials/i }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/billing/ai/admin/platform-budget/trials', { enabled: false }));
+    await waitFor(() => expect(screen.getByTestId('platform-budget-card').textContent).toMatch(/Off \(paused\)/));
+    expect(screen.getByRole('button', { name: /resume new trials/i })).toBeInTheDocument();
+  });
+
+  it('says the card is unavailable when the backend sends platform_budget: null', async () => {
+    api.get.mockResolvedValueOnce({ data: { configured: true, orgs: [], platform_budget: null } });
+    renderPage();
+    const card = await screen.findByTestId('platform-budget-card');
+    expect(card.textContent).toMatch(/Not available/);
+  });
 });

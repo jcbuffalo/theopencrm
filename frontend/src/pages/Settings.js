@@ -613,6 +613,14 @@ const NOTIFICATION_CATEGORIES = [
     blurb: 'A customer sent a document through their shared portal link.',
     defaults: { email: false, sms: false },
   },
+  // Platform guardrails (migration 174). Only super-admins ever receive
+  // these; shown to everyone so the toggle is discoverable.
+  {
+    key:   'platform_budget',
+    label: 'Platform AI budget and trial-slot alerts (super-admins)',
+    blurb: 'When unbilled AI cost or live trial slots cross 50 / 80 / 100%. Comes with a one-click pause for new trials.',
+    defaults: { email: false, sms: false },
+  },
 ];
 
 const NOTIFICATION_CHANNELS = ['email', 'sms'];

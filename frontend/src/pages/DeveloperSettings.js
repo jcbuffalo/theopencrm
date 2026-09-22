@@ -24,7 +24,12 @@ import DataTable from '../components/DataTable';
 import { useAuth } from '../AuthContext';
 import { Alert, Button, Card, Container, EmptyState, Input, PageHeader, Skeleton, StatusBadge } from '../components/ui';
 
-const WEBHOOK_EVENTS = ['deal.created', 'deal.stage_changed'];
+// Keep in step with backend/routes/outboundWebhookRoutes.js KNOWN_EVENTS.
+const WEBHOOK_EVENTS = [
+  'deal.created', 'deal.updated', 'deal.stage_changed',
+  'contact.created', 'company.created', 'activity.logged',
+  'task.completed', 'lead.captured',
+];
 
 function CopyBox({ label, value }) {
   const [copied, setCopied] = useState(false);
@@ -61,6 +66,9 @@ function ApiKeysSection() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [name, setName] = useState('');
+  // Spec 206: keys default to read-only; 'write' unlocks create/update/delete
+  // on the CRM surface (never account/billing/admin routes).
+  const [allowWrite, setAllowWrite] = useState(false);
   const [creating, setCreating] = useState(false);
   const [freshKey, setFreshKey] = useState(null);
 
@@ -86,9 +94,10 @@ function ApiKeysSection() {
     setError('');
     setFreshKey(null);
     try {
-      const r = await api.post('/keys', { name: name.trim() });
+      const r = await api.post('/keys', { name: name.trim(), scopes: allowWrite ? ['read', 'write'] : ['read'] });
       setFreshKey(r.data.key);
       setName('');
+      setAllowWrite(false);
       await load();
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to create key');
@@ -110,6 +119,12 @@ function ApiKeysSection() {
   const columns = [
     { key: 'name', label: 'Name' },
     { key: 'key_prefix', label: 'Prefix', render: (k) => <span className="font-mono text-xs">{k.key_prefix}…</span> },
+    {
+      key: 'scopes', label: 'Access',
+      render: (k) => ((k.scopes || []).includes('write')
+        ? <StatusBadge tone="warning" label="Read + write" />
+        : <StatusBadge tone="neutral" label="Read-only" />),
+    },
     { key: 'last_used_at', label: 'Last used', render: (k) => (k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never') },
     {
       key: 'status', label: 'Status',
@@ -125,7 +140,7 @@ function ApiKeysSection() {
           Personal Access Tokens for calling the API from scripts and integrations. Send the key as
           <code className="mx-1 font-mono text-xs bg-gray-100 px-1 rounded">Authorization: Bearer tocrm_…</code>
           or <code className="mx-1 font-mono text-xs bg-gray-100 px-1 rounded">X-API-Key: tocrm_…</code>
-          against the <code className="font-mono text-xs bg-gray-100 px-1 rounded">/api/v1</code> endpoints.
+          against the <code className="font-mono text-xs bg-gray-100 px-1 rounded">/api/v1</code> endpoints: companies, contacts, deals, tasks, activities, leads, CSV import, pipelines, My Day, the copilot, plugins and webhooks. A key acts as you, inside this workspace; it can never reach account, billing or admin settings. Read-only unless you allow writes.
         </>
       }
     >
@@ -137,6 +152,15 @@ function ApiKeysSection() {
           placeholder="e.g. Zapier integration"
           wrapperClassName="flex-1"
         />
+        <label className="inline-flex items-center gap-2 text-sm text-gray-700 min-h-[40px] px-1 whitespace-nowrap">
+          <input
+            type="checkbox"
+            className="h-4 w-4 rounded border-gray-300 text-brand-blue focus:ring-brand-blue"
+            checked={allowWrite}
+            onChange={(e) => setAllowWrite(e.target.checked)}
+          />
+          Allow writes
+        </label>
         <Button type="submit" icon="plus" disabled={!name.trim()} loading={creating} loadingLabel="Creating…">
           Create key
         </Button>

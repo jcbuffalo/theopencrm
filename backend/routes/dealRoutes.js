@@ -716,6 +716,16 @@ router.put('/:id', validateBody(dealSchemas.updateSchema), async (req, res) => {
     if (req.orgId && dealUpdatedPrev) {
       pluginEvents.emitDealUpdated(req.orgId, dealUpdatedPrev, result.rows[0]);
     }
+    // Outbound webhook (spec 206 part 3): every successful PUT, with the
+    // stage so subscribers can diff; stage-only edits also fire
+    // deal.stage_changed above (webhook subscribers choose which to take).
+    if (req.orgId) {
+      const d = result.rows[0];
+      webhookDispatcher.dispatch(req.orgId, 'deal.updated', {
+        id: d.id, title: d.title, stage: d.stage, deal_type: d.deal_type, amount: d.amount,
+        expected_close_date: d.expected_close_date, owner_user_id: d.owner_user_id, next_step: d.next_step,
+      });
+    }
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Deal update error:', error);
